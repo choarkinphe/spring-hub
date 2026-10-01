@@ -1,0 +1,56 @@
+# Cute Cat (HandBrake edition) — example configuration.
+# Copy to config.toml and adjust. Secrets do NOT belong in this file: the API
+# token is read from the environment (CUTE_CAT_API_TOKEN) only.
+
+[server]
+# Bind address. Compose keeps this on the container network; publish it to
+# loopback on the host.
+listen = "0.0.0.0:8080"
+# SQLite database. Must live on local storage, never on SMB/NFS.
+database = "/data/cute-cat.db"
+# Fallback root used only when no [[storage_roots]] is defined.
+media_root = "/media"
+
+[security]
+# Leave empty for local/trusted use. Set CUTE_CAT_API_TOKEN in the environment
+# for anything reachable beyond the host. Empty here on purpose.
+api_token = ""
+
+[engine]
+# Path to (or name of) the real HandBrakeCLI binary.
+handbrake_bin = "HandBrakeCLI"
+# Optional ffprobe used only for an informational cross-check; not required.
+ffprobe_bin = "ffprobe"
+# How many encodes may run at once.
+max_concurrent_jobs = 1
+# Refuse to overwrite an existing output file.
+refuse_overwrite = true
+# Optional wall-clock limit per job, in seconds (0 = unlimited).
+job_timeout_seconds = 0
+# Fixed extra arguments appended to every encode (advanced; keep empty).
+extra_args = []
+
+# Storage roots are the only directories the service may touch. Clients submit
+# a root id plus a *relative* path — never an absolute path.
+[[storage_roots]]
+id = "media"
+label = "Media (read/write)"
+path = "/media"
+read_only = false
+# Optional marker file proving a network share is actually mounted; when it is
+# missing the UI shows the root as unavailable instead of treating an empty
+# local directory as the share.
+mount_marker = ".cute-cat-mounted"
+
+# A second, read-only root is a good way to expose a library that must never be
+# written to. Uncomment to use.
+# [[storage_roots]]
+# id = "library"
+# label = "Library (read-only)"
+# path = "/library"
+# read_only = true
+# mount_marker = ".cute-cat-mounted"
+
+[web]
+# Leave empty to use the assets bundled with the package (next/web).
+dir = ""

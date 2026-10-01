@@ -1,0 +1,98 @@
+# Cute Cat — HandBrake edition, Docker Compose.
+#
+#   docker compose -f compose.handbrake.yaml up --build
+#
+# This file is intentionally separate from the legacy `compose.yaml` so the old
+# deployment is left untouched.
+#
+# Security posture:
+#   * non-root user, read-only root filesystem, all capabilities dropped;
+#   * NO privileged mode, NO Docker socket, NO new privileges;
+#   * only loopback is published by default — put a TLS reverse proxy in front
+#     for remote access and set CUTE_CAT_API_TOKEN;
+#   * network-share credentials are NOT in this file; they come from an env file
+#     or a credentials file you keep out of version control.
+
+services:
+  cute-cat:
+    build:
+      context: .
+      dockerfile: Dockerfile.handbrake
+    image: cute-cat-handbrake:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      CUTE_CAT_CONFIG: /data/config.toml
+      CUTE_CAT_DATABASE: /data/cute-cat.db
+      CUTE_CAT_ENGINE: HandBrakeCLI
+      CUTE_CAT_MEDIA_ROOT: /media
+      CUTE_CAT_MAX_JOBS: "1"
+      # Set a token for anything beyond loopback:
+      # CUTE_CAT_API_TOKEN: ${CUTE_CAT_API_TOKEN:?set this for non-loopback access}
+    volumes:
+      # Persistent application state (SQLite, generated config). Local only.
+      - cute-cat-data:/data
+      # Media workspace. Replace with a host bind mount or a network volume
+      # (see the SMB/NFS examples at the bottom of this file).
+      - ${CUTE_CAT_MEDIA:-./media}:/media
+      # Mount a pre-made config if you prefer to manage it yourself:
+      # - ./config.toml:/data/config.toml:ro
+    read_only: true
+    tmpfs:
+      # HandBrakeCLI writes scratch data here; keep it off the read-only root.
+      - /tmp:size=2g,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8080/health/live"]
+      interval: 20s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  cute-cat-data:
+
+# ---------------------------------------------------------------------------
+# Optional: network shares as Docker "local" volumes.
+#
+# Docker mounts these BEFORE the container starts, using kernel CIFS/NFS
+# support on the host. The application never mounts anything itself and never
+# receives mount capabilities. On an unprivileged/rootless setup these mounts
+# may be unavailable — mount on the host and bind-mount the path instead.
+#
+# NFS — uncomment and add to the service's `volumes:` as `media-nfs:/media`.
+#
+# volumes:
+#   media-nfs:
+#     driver: local
+#     driver_opts:
+#       type: nfs
+#       o: "addr=${NFS_HOST},rw,nfsvers=4,hard,timeo=600"
+#       device: ":${NFS_PATH}"
+#
+# SMB/CIFS — prefer a credentials FILE over inline secrets, because inline
+# values are visible via `docker inspect`.
+#
+# volumes:
+#   media-smb:
+#     driver: local
+#     driver_opts:
+#       type: cifs
+#       o: "credentials=${SMB_CREDENTIALS_FILE},vers=3.0,uid=10001,gid=10001,iocharset=utf8"
+#       device: "//${SMB_HOST}/${SMB_SHARE}"
+#
+# Example credentials file (chmod 600, never committed):
+#   username=nasuser
+#   password=naspass
+#   domain=WORKGROUP
+#
+# With either network volume, also set a mount marker so the UI can tell an
+# unmounted share from an empty one:
+#   environment:
+#     CUTE_CAT_MOUNT_MARKER: ".cute-cat-mounted"
+# ...and place that file at the share root once.
+# ---------------------------------------------------------------------------

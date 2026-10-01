@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cute Cat · HandBrake 工作台</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🐱</span>
+      <div>
+        <h1>Cute Cat</h1>
+        <p class="subtitle">HandBrake 转码工作台</p>
+      </div>
+    </div>
+    <div class="status-cluster">
+      <span id="engine-status" class="pill pill-unknown" title="HandBrakeCLI 状态">引擎检测中…</span>
+      <span id="queue-status" class="pill pill-idle">队列空闲</span>
+    </div>
+  </header>
+
+  <div id="engine-banner" class="banner banner-warn hidden" role="alert"></div>
+
+  <nav class="workspace-nav" aria-label="主导航">
+    <button type="button" class="workspace-link active" data-workspace="encode" aria-current="page">编码设置</button>
+    <button type="button" class="workspace-link" data-workspace="files">文件浏览</button>
+    <button type="button" class="workspace-link" data-workspace="queue">任务队列</button>
+  </nav>
+  <main class="layout">
+    <section class="col workspace-page" data-page="files" hidden aria-label="文件浏览">
+      <div class="page-heading"><h2>文件浏览</h2><p>选择已挂载目录中的媒体文件，随后设置转码参数。</p></div>
+      <section class="panel">
+        <h2>源文件</h2>
+        <label class="field">
+          <span>存储根</span>
+          <select id="root-select"></select>
+        </label>
+        <div id="browser" class="browser" aria-label="文件浏览"></div>
+        <div class="path-row">
+          <code id="current-path">/</code>
+        </div>
+        <button id="btn-up" class="btn btn-ghost" type="button">↑ 上级目录</button>
+      </section>
+    </section>
+
+    <section class="col workspace-page" data-page="encode" aria-label="编码设置">
+      <div class="page-heading"><div><h2>编码设置</h2><p>选择源文件后，按分类调整输出设置。</p></div><button class="btn" type="button" data-open-workspace="files">选择源文件</button></div>
+      <div class="source-summary" id="source-summary">
+        <div class="placeholder">从左侧选择一个媒体文件，或点击“扫描”查看标题信息。</div>
+      </div>
+
+      <nav class="tabs" role="tablist" aria-label="HandBrake 设置">
+        <button class="tab active" data-tab="summary" role="tab">摘要</button>
+        <button class="tab" data-tab="dimensions" role="tab">尺寸</button>
+        <button class="tab" data-tab="filters" role="tab">滤镜</button>
+        <button class="tab" data-tab="video" role="tab">视频</button>
+        <button class="tab" data-tab="audio" role="tab">音频</button>
+        <button class="tab" data-tab="subtitles" role="tab">字幕</button>
+        <button class="tab" data-tab="chapters" role="tab">章节</button>
+      </nav>
+
+      <div class="tab-panels">
+        <!-- Summary -->
+        <div class="tab-panel active" data-panel="summary">
+          <h3>摘要</h3>
+          <div class="preset-summary">
+            <div>
+              <span class="preset-eyebrow" id="preset-current-source">自定义</span>
+              <strong id="preset-current-name">自定义参数</strong>
+              <p class="hint" id="preset-hint">使用下方各标签中的参数。</p>
+            </div>
+            <button id="btn-open-presets" class="btn" type="button" aria-haspopup="dialog" aria-controls="preset-drawer">选择预设</button>
+          </div>
+          <label class="field">
+            <span>输出容器</span>
+            <select id="container-select"></select>
+          </label>
+          <label class="field">
+            <span>输出文件名（相对路径）</span>
+            <input id="output-name" type="text" placeholder="converted/movie.mp4" />
+          </label>
+          <label class="field">
+            <span>输出存储根</span>
+            <select id="output-root-select"></select>
+          </label>
+        </div>
+
+        <!-- Dimensions -->
+        <div class="tab-panel" data-panel="dimensions">
+          <h3>尺寸</h3>
+          <div class="grid-2">
+            <label class="field"><span>宽度 (-w)</span><input id="dim-width" type="number" min="0" placeholder="auto" /></label>
+            <label class="field"><span>高度 (-l)</span><input id="dim-height" type="number" min="0" placeholder="auto" /></label>
+          </div>
+          <label class="field"><span>裁剪模式</span>
+            <select id="dim-crop-mode">
+              <option value="auto">自动</option>
+              <option value="none">关闭</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <div class="grid-4">
+            <label class="field"><span>上</span><input id="crop-top" type="number" min="0" /></label>
+            <label class="field"><span>下</span><input id="crop-bottom" type="number" min="0" /></label>
+            <label class="field"><span>左</span><input id="crop-left" type="number" min="0" /></label>
+            <label class="field"><span>右</span><input id="crop-right" type="number" min="0" /></label>
+          </div>
+          <label class="field"><span>变形 (Anamorphic)</span>
+            <select id="dim-anamorphic">
+              <option value="auto">自动</option>
+              <option value="none">关闭</option>
+              <option value="strict">严格</option>
+              <option value="loose">宽松</option>
+            </select>
+          </label>
+          <label class="field"><span>尺寸对齐倍数（Modulus）</span>
+            <select id="dim-modulus">
+              <option value="">默认</option>
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="8">8</option>
+              <option value="16">16</option>
+              <option value="32">32</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Filters -->
+        <div class="tab-panel" data-panel="filters">
+          <h3>滤镜</h3>
+          <label class="field"><span>去隔行 (Deinterlace)</span>
+            <select id="flt-deinterlace">
+              <option value="off">关闭</option>
+              <option value="fast">快速</option>
+              <option value="slow">慢速</option>
+              <option value="slower">更慢</option>
+              <option value="bob">Bob（双倍帧率）</option>
+            </select>
+          </label>
+          <label class="field"><span>降噪 (Denoise)</span>
+            <select id="flt-denoise">
+              <option value="off">关闭</option>
+              <option value="nlmeans">NLMeans</option>
+              <option value="hqdn3d">HQDN3D</option>
+            </select>
+          </label>
+          <label class="field"><span>反电视电影 (Detelecine)</span>
+            <select id="flt-detelecine">
+              <option value="off">关闭</option>
+              <option value="default">默认</option>
+            </select>
+          </label>
+          <label class="field"><span>旋转</span>
+            <select id="flt-rotate">
+              <option value="off">关闭</option>
+              <option value="90">90°</option>
+              <option value="180">180°</option>
+              <option value="270">270°</option>
+            </select>
+          </label>
+          <div class="grid-2">
+            <label class="check"><input id="flt-grayscale" type="checkbox" /> 灰度</label>
+            <label class="check"><input id="flt-hflip" type="checkbox" /> 水平翻转</label>
+            <label class="check"><input id="flt-chroma" type="checkbox" /> Chroma Smooth</label>
+            <label class="check"><input id="flt-lapsharp" type="checkbox" /> Lapsharp</label>
+            <label class="check"><input id="flt-unsharp" type="checkbox" /> Unsharp</label>
+          </div>
+        </div>
+
+        <!-- Video -->
+        <div class="tab-panel" data-panel="video">
+          <h3>视频</h3>
+          <label class="field"><span>编码器 (-e)</span>
+            <select id="video-encoder"></select>
+          </label>
+          <label class="field"><span>质量类型</span>
+            <select id="video-quality-type"></select>
+          </label>
+          <div class="grid-2">
+            <label class="field"><span>质量 / RF (-q)</span><input id="video-quality" type="number" step="0.5" min="0" max="63" value="22" /></label>
+            <label class="field"><span>码率 kbps (-b)</span><input id="video-bitrate" type="number" min="1" placeholder="auto" /></label>
+          </div>
+          <div class="grid-2">
+            <label class="field"><span>编码器预设</span><select id="video-preset"></select></label>
+            <label class="field"><span>Tune</span><select id="video-tune"></select></label>
+          </div>
+          <div class="grid-2">
+            <label class="field"><span>编码配置（Profile）</span><select id="video-profile"></select></label>
+            <label class="field"><span>Level</span><select id="video-level"></select></label>
+          </div>
+          <div class="grid-2">
+            <label class="field"><span>帧率 (-r)</span><select id="video-framerate"></select></label>
+            <label class="check"><input id="video-two-pass" type="checkbox" /> 两遍编码</label>
+            <label class="check"><input id="video-turbo" type="checkbox" /> Turbo 首遍</label>
+          </div>
+        </div>
+
+        <!-- Audio -->
+        <div class="tab-panel" data-panel="audio">
+          <h3>音频</h3>
+          <div id="audio-tracks"></div>
+          <button id="btn-add-audio" class="btn btn-ghost" type="button">+ 添加音轨</button>
+        </div>
+
+        <!-- Subtitles -->
+        <div class="tab-panel" data-panel="subtitles">
+          <h3>字幕</h3>
+          <label class="field"><span>行为 (--subtitle)</span>
+            <select id="sub-behavior"></select>
+          </label>
+          <label class="field"><span>烧录字幕轨</span><input id="sub-burn" type="number" min="1" placeholder="无" /></label>
+          <label class="field"><span>默认字幕轨</span><input id="sub-default" type="number" min="1" placeholder="无" /></label>
+          <label class="check"><input id="sub-forced" type="checkbox" /> 仅强制字幕</label>
+          <label class="field"><span>外挂字幕文件（相对路径，可选）</span>
+            <input id="sub-srt" type="text" placeholder="subs/movie.srt" />
+          </label>
+        </div>
+
+        <!-- Chapters -->
+        <div class="tab-panel" data-panel="chapters">
+          <h3>章节</h3>
+          <label class="field"><span>模式</span>
+            <select id="chap-mode">
+              <option value="auto">保留源章节</option>
+              <option value="none">移除章节</option>
+              <option value="markers">从标记文件创建</option>
+            </select>
+          </label>
+          <label class="field"><span>章节标记文件（相对路径）</span>
+            <input id="chap-file" type="text" placeholder="chapters/movie.txt" />
+          </label>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="btn-scan" class="btn" type="button">扫描源文件</button>
+        <button id="btn-preview" class="btn" type="button" disabled title="预览渲染未实现（见功能矩阵）">预览</button>
+        <button id="btn-queue" class="btn btn-primary" type="button" disabled>加入队列</button>
+      </div>
+    </section>
+
+    <section class="col workspace-page" data-page="queue" hidden aria-label="任务队列">
+      <div class="page-heading"><div><h2>任务队列 <span id="queue-count" class="badge">0</span></h2><p>选择任务查看进度、错误信息与完整日志。</p></div><button class="btn" type="button" data-open-workspace="encode">返回编码设置</button></div>
+      <div class="queue-layout">
+      <section class="panel queue-list-panel">
+        <h2>全部任务</h2>
+        <ul id="job-list" class="job-list"></ul>
+      </section>
+      <section class="panel">
+        <h2>任务详情</h2>
+        <div id="job-detail" class="job-detail">
+          <p class="hint">选择队列中的任务查看进度与日志。</p>
+        </div>
+        <div class="progress-wrap">
+          <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+          <span id="progress-label" class="hint">—</span>
+        </div>
+        <div class="actions actions-tight">
+          <button id="btn-cancel" class="btn btn-danger" type="button" disabled>取消任务</button>
+        </div>
+      </section>
+      <section class="panel queue-log-panel">
+        <pre id="job-log" class="log">—</pre>
+      </section>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>功能矩阵见 <a href="#" id="link-matrix">能力报告</a>。</span>
+    <span id="version-tag"></span>
+  </footer>
+
+  <dialog id="preset-drawer" class="preset-drawer" aria-labelledby="preset-drawer-title" aria-describedby="preset-drawer-help">
+    <header class="preset-drawer-header">
+      <div><h2 id="preset-drawer-title">选择预设</h2><p id="preset-drawer-help">按分类浏览，点击卡片选择预设。</p></div>
+      <button id="btn-close-presets" class="btn btn-ghost" type="button" aria-label="关闭预设抽屉">关闭 ✕</button>
+    </header>
+    <div class="preset-toolbar">
+      <div class="preset-sources" role="group" aria-label="预设来源">
+        <button class="preset-source-btn active" type="button" data-preset-source="official" aria-pressed="true">官方预设</button>
+        <button class="preset-source-btn" type="button" data-preset-source="imported" aria-pressed="false">导入预设</button>
+        <button class="preset-source-btn" type="button" data-preset-source="custom" aria-pressed="false">自定义</button>
+      </div>
+      <div class="preset-search-row">
+        <label class="field"><span>搜索预设</span><input id="preset-search" type="search" placeholder="搜索名称、分类或说明" autofocus /></label>
+        <button id="btn-clear-preset-search" class="btn btn-ghost btn-small" type="button">清空</button>
+      </div>
+      <nav id="preset-group-nav" class="preset-group-nav" aria-label="预设分类"></nav>
+    </div>
+    <div id="preset-results" class="preset-results" aria-busy="false"></div>
+    <footer class="preset-drawer-footer"><span id="preset-result-count" role="status" aria-live="polite"></span><span>点击即选用 · Esc 关闭</span></footer>
+  </dialog>
+
+  <dialog id="encoder-drawer" class="preset-drawer encoder-drawer" aria-labelledby="encoder-drawer-title" aria-describedby="encoder-drawer-help">
+    <header class="preset-drawer-header">
+      <div><h2 id="encoder-drawer-title">选择编码器</h2><p id="encoder-drawer-help">查看编码方式与当前环境状态，再选择编码器。</p></div>
+      <button id="btn-close-encoders" class="btn btn-ghost" type="button" aria-label="关闭编码器抽屉">关闭 ✕</button>
+    </header>
+    <div class="preset-toolbar">
+      <div class="preset-search-row">
+        <label class="field"><span>搜索编码器</span><input id="encoder-search" type="search" placeholder="搜索名称、格式、CPU / GPU 或厂商" /></label>
+        <button id="btn-clear-encoder-search" class="btn btn-ghost btn-small" type="button">清空</button>
+      </div>
+      <div class="encoder-toolbar-row"><div id="encoder-filters" class="encoder-filters" role="group" aria-label="编码方式"></div><button id="btn-refresh-encoders" class="btn btn-small" type="button">重新检测</button></div>
+      <p class="hint">状态以真实实例化检测为准：“缺少硬件支持”表示引擎含该编码器、但本机硬件或驱动跑不通；“当前引擎不含”表示这个 HandBrake 构建确实没有它，卡片会给出获取方式（需你在宿主机执行，本程序不执行安装）。“已内置”不代表 GPU 转码已实测。</p>
+      <p id="encoder-message" class="encoder-message" role="status" aria-live="polite"></p>
+    </div>
+    <div id="encoder-results" class="preset-results" aria-busy="false"></div>
+    <footer class="preset-drawer-footer"><span id="encoder-result-count" role="status" aria-live="polite"></span><span>选用后返回设置 · Esc 关闭</span></footer>
+  </dialog>
+
+  <dialog id="matrix-dialog">
+    <h3>功能矩阵</h3>
+    <table id="matrix-table"><thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead><tbody></tbody></table>
+    <button class="btn" id="btn-close-matrix" type="button">关闭</button>
+  </dialog>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

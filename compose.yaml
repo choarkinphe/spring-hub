@@ -1,0 +1,28 @@
+services:
+  cute-cat:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      RUST_LOG: cute_cat=info,tower_http=info
+    volumes:
+      - cute-cat-data:/data
+      - ${CUTE_CAT_MEDIA:-./media}:/media
+      - ./config.toml:/app/config.toml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8080/health/live"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  cute-cat-data:

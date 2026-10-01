@@ -1,0 +1,26 @@
+[server]
+listen = "0.0.0.0:8080"
+database_url = "sqlite:///data/cute-cat.db"
+
+[security]
+# Set this in production. Empty means local development mode.
+api_token = ""
+
+[[storage_roots]]
+id = "media"
+label = "Media workspace"
+path = "/media"
+read_only = false
+mount_marker = ".cute-cat-mounted"
+
+[transcoding]
+ffmpeg_bin = "ffmpeg"
+ffprobe_bin = "ffprobe"
+max_concurrent_jobs = 1
+
+[transcoding.installer]
+# The page can copy this fixed, administrator-provided bundle into /data.
+enabled = true
+install_dir = "/data/cute-cat-tools"
+source_dir = "/opt/cute-cat/ffmpeg-bundle"
+version = "bundled"

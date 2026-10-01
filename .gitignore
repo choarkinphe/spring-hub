@@ -1,0 +1,29 @@
+# --- Build output ---------------------------------------------------------
+# Rust build artifacts: ~1.7 GB, fully reproducible from Cargo.lock.
+/target/
+
+# Python bytecode caches.
+__pycache__/
+*.py[cod]
+
+# --- Local state / secrets ------------------------------------------------
+# Real env files (see *.example). Never commit filled-in credentials.
+.env
+.env.*
+!.env.handbrake.example
+
+# SQLite databases and their WAL/SHM sidecars. Must live on local storage.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Machine-local Claude Code state (permission allowlist, absolute paths).
+.claude/settings.local.json
+
+# --- Runtime / editor noise -----------------------------------------------
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

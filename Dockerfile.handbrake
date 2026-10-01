@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1.7
+#
+# Cute Cat — HandBrake edition.
+#
+# This image contains the REAL HandBrakeCLI plus the Python (standard-library
+# only) web service. No third-party Python packages are installed at runtime.
+#
+# The engine is installed from the distribution package `handbrake-cli`, which
+# is cryptographically verified by apt. Distribution packages are sometimes
+# built WITHOUT hardware encoders (NVENC/QSV/VAAPI). If you need hardware
+# encoding, either use a distribution that ships them, or build HandBrake from
+# source — see README.handbrake.md, "Building a hardware-enabled engine".
+#
+# Base images are pinned by tag. For a reproducible deployment, pin them by
+# digest (`FROM debian:bookworm-slim@sha256:...`) in your own fork.
+
+# ---------------------------------------------------------------------------
+# Stage 1: verify the Python sources compile (cheap sanity gate).
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm AS check
+WORKDIR /src
+COPY next/cutecat ./cutecat
+COPY next/tests ./tests
+COPY next/tools ./tools
+RUN python -m compileall -q cutecat && \
+    PYTHONPATH=/src:/src/tests python -m unittest discover -s tests -t tests 2>&1 | tail -5
+
+# ---------------------------------------------------------------------------
+# Stage 2: runtime.
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      handbrake-cli \
+      ca-certificates \
+      tini \
+      wget \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 10001 cute-cat \
+ && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin cute-cat
+
+WORKDIR /app
+COPY --from=check /src/cutecat /app/cutecat
+COPY next/web /app/web
+COPY config.example.handbrake.toml /app/config.example.toml
+COPY next/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh \
+ && mkdir -p /data /media \
+ && chown -R cute-cat:cute-cat /app /data /media
+
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    CUTE_CAT_CONFIG=/data/config.toml \
+    CUTE_CAT_ENGINE=HandBrakeCLI \
+    CUTE_CAT_LISTEN=0.0.0.0:8080 \
+    CUTE_CAT_DATABASE=/data/cute-cat.db
+
+EXPOSE 8080
+USER cute-cat
+
+# Read-only root filesystem friendly: the entrypoint only writes under /data.
+HEALTHCHECK --interval=20s --timeout=4s --start-period=10s --retries=5 \
+  CMD wget --spider --quiet http://127.0.0.1:8080/health/live || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]
+CMD ["python", "-m", "cutecat"]
