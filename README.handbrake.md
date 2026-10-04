@@ -83,9 +83,27 @@ matrix documented below.
 
 ---
 
-## Quick start (WSL Ubuntu)
+## Deployment quick start (Docker)
 
-All commands run in WSL, per project convention.
+**Docker is the release and runtime environment. WSL Ubuntu is used only for
+source development, debugging and regression tests.** End users need a Linux
+container runtime and Docker Compose, not host Python/Node/HandBrake or WSL.
+
+Follow the [Docker quick start](README.md#docker-部署与快速开始): configure the
+host media mount and UID/GID 10001 permissions, create the mount marker only on
+an available share, then build and start:
+
+```bash
+docker compose -f compose.handbrake.yaml up -d --build
+```
+
+The intended container runtime has not yet been acceptance-tested here; WSL
+CPU/debug evidence is not a Docker build/run guarantee.
+
+## Source debugging (WSL Ubuntu)
+
+The following commands are for contributors, not the release deployment path.
+All development commands run in WSL, per project convention.
 
 ```bash
 cd /mnt/c/Users/xiaohua/Documents/code/cute-cat
