@@ -1,4 +1,4 @@
-# Cute Cat — HandBrake edition
+# SpringHub — HandBrake edition
 
 A self-hosted web workbench that drives the **real HandBrakeCLI**. This is the
 only supported implementation: the legacy Rust/FFmpeg service, web pages and
@@ -14,7 +14,21 @@ deployment entrypoints have been removed. Source and native web UI live under
 | `.env.handbrake.example` | Compose environment template |
 | `README.handbrake.md` | This document |
 
-The default `cute-cat-preview` configuration launches this implementation at
+The public name is **SpringHub**, with a black/white/orange interface. Run
+`python -m springhub`; `python -m cutecat` remains a compatible alias. New
+`SPRINGHUB_*` environment variables take precedence when present, with `CUTE_CAT_*`
+as fallback. Empty new tokens intentionally override legacy tokens; no secret is
+returned in public configuration.
+
+Persistent names (`cute-cat.db`, `cute-cat-data`, `.cute-cat-mounted`, browser
+preference keys and `cute-cat-task-templates` JSON format) remain unchanged for
+compatibility. Existing tasks, templates and preferences are not migrated or
+cleared by rebranding. Compose now uses service `springhub` and image
+`springhub-handbrake:local`: stop the previous service first, preserve the Compose
+project name/volume and never run two instances on one database. Docker upgrade
+has not been verified in this environment.
+
+The default `springhub-preview` configuration launches this implementation at
 <http://localhost:18087>. Old databases, Docker volumes and media have not been
 deleted or migrated; do not point this service at a legacy database.
 
@@ -85,7 +99,7 @@ PYTHONPATH=next:next/tests python3 -m unittest discover -s next/tests -t next/te
 
 # 3. Start the service.
 export PYTHONPATH="$PWD/next"
-python3 -m cutecat --config config.example.handbrake.toml
+python3 -m springhub --config config.example.handbrake.toml
 ```
 
 Open <http://127.0.0.1:8080>.
@@ -162,7 +176,7 @@ or exhaustive custom filter compatibility.
 ### Checking engine availability
 
 ```bash
-PYTHONPATH=next python3 -m cutecat --check
+PYTHONPATH=next python3 -m springhub --check
 ```
 
 Prints the resolved binary, version, and hardware encoders, and exits non-zero
@@ -428,11 +442,11 @@ See `config.example.handbrake.toml`. Key points:
 * `mount_marker` — optional file proving a network share is mounted, so an
   unmounted share is shown as unavailable instead of being treated as an empty
   local directory.
-* `security.api_token` — leave empty for loopback; **set `CUTE_CAT_API_TOKEN`
+* `security.api_token` — leave empty for loopback; **set `SPRINGHUB_API_TOKEN`
   in the environment** for anything else. Secrets never go in the image.
 
-Environment overrides: `CUTE_CAT_CONFIG`, `CUTE_CAT_LISTEN`,
-`CUTE_CAT_DATABASE`, `CUTE_CAT_ENGINE`, `CUTE_CAT_API_TOKEN`.
+Environment overrides: `SPRINGHUB_CONFIG`, `SPRINGHUB_LISTEN`,
+`SPRINGHUB_DATABASE`, `SPRINGHUB_ENGINE`, `SPRINGHUB_API_TOKEN`.
 
 The SQLite database must live on local storage — never on SMB/NFS.
 
@@ -525,7 +539,7 @@ it). Only the last one shows acquisition guidance.
 Encoders are **compiled into the HandBrake binary**; there is no
 `install nvenc_h265`. Getting one means swapping the engine binary, which is a
 host-level operation. The card shows the options and copyable commands, and
-**Cute Cat never runs any of them** — the service has no package manager, no
+**SpringHub never runs any of them** — the service has no package manager, no
 Docker socket and no privilege, by design.
 
 Distribution `handbrake-cli` packages are frequently built **without** hardware

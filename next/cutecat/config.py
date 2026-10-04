@@ -3,13 +3,15 @@
 A single TOML file drives the service. Environment variables can override the
 few operational knobs that matter for containers:
 
-* ``CUTE_CAT_CONFIG``  — path to the TOML file (default ``config.toml``).
-* ``CUTE_CAT_LISTEN``  — override ``server.listen``.
-* ``CUTE_CAT_DATABASE``— override ``server.database``.
-* ``CUTE_CAT_ENGINE``  — override ``engine.handbrake_bin``.
+* ``SPRINGHUB_CONFIG``  — path to the TOML file (default ``config.toml``).
+* ``SPRINGHUB_LISTEN``  — override ``server.listen``.
+* ``SPRINGHUB_DATABASE``— override ``server.database``.
+* ``SPRINGHUB_ENGINE``  — override ``engine.handbrake_bin``.
+
+The historical ``CUTE_CAT_*`` prefix is accepted when the new key is absent.
 
 Secrets are **never** read from the config file into the image; the optional
-API token is supplied through the environment only (``CUTE_CAT_API_TOKEN``).
+API token uses ``SPRINGHUB_API_TOKEN`` (legacy ``CUTE_CAT_API_TOKEN`` accepted).
 """
 
 from __future__ import annotations
@@ -120,12 +122,26 @@ def _as_bool(value: object, default: bool = False) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def environment(name: str, default=None, *, allow_empty=False):
+    """New public prefix wins; legacy variables remain supported.
+
+    Empty path/address variables use defaults, but an explicitly empty token
+    remains meaningful and must not inherit a legacy token accidentally.
+    """
+    for prefix in ("SPRINGHUB_", "CUTE_CAT_"):
+        key = prefix + name
+        if key in os.environ:
+            value = os.environ[key]
+            return value if value or allow_empty else default
+    return default
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
     """Load configuration from TOML, applying environment overrides."""
 
     config_path = Path(
         path
-        or os.environ.get("CUTE_CAT_CONFIG")
+        or environment("CONFIG")
         or "config.toml"
     )
     raw: dict = {}
@@ -141,9 +157,9 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
     engine_raw = raw.get("engine", {}) or {}
     security = raw.get("security", {}) or {}
 
-    listen = os.environ.get("CUTE_CAT_LISTEN") or server.get("listen") or "0.0.0.0:8080"
-    database = os.environ.get("CUTE_CAT_DATABASE") or server.get("database") or "/data/cute-cat.db"
-    media_root = server.get("media_root") or "/media"
+    listen = environment("LISTEN") or server.get("listen") or "0.0.0.0:8080"
+    database = environment("DATABASE") or server.get("database") or "/data/cute-cat.db"
+    media_root = environment("MEDIA_ROOT") or server.get("media_root") or "/media"
 
     roots_raw = raw.get("storage_roots", []) or []
     roots: list[StorageRoot] = []
@@ -167,7 +183,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
 
     if not roots:
         # Sensible single-root default so the service still boots in dev.
-        roots.append(StorageRoot(id="media", label="Media", path=media_root, read_only=False))
+        roots.append(StorageRoot(id="media", label="媒体目录", path=media_root, read_only=False,
+                                 mount_marker=environment("MOUNT_MARKER")))
 
     extra_args_raw = engine_raw.get("extra_args", []) or []
     if isinstance(extra_args_raw, str):
@@ -176,15 +193,15 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
         extra_args = tuple(str(a) for a in extra_args_raw)
 
     engine = EngineConfig(
-        handbrake_bin=os.environ.get("CUTE_CAT_ENGINE") or engine_raw.get("handbrake_bin") or "HandBrakeCLI",
+        handbrake_bin=environment("ENGINE") or engine_raw.get("handbrake_bin") or "HandBrakeCLI",
         ffprobe_bin=engine_raw.get("ffprobe_bin") or "ffprobe",
-        max_concurrent_jobs=max(1, int(engine_raw.get("max_concurrent_jobs", 1) or 1)),
+        max_concurrent_jobs=max(1, int(environment("MAX_JOBS") or engine_raw.get("max_concurrent_jobs", 1) or 1)),
         extra_args=extra_args,
         job_timeout_seconds=int(engine_raw.get("job_timeout_seconds", 0) or 0),
         refuse_overwrite=_as_bool(engine_raw.get("refuse_overwrite"), True),
     )
 
-    api_token = os.environ.get("CUTE_CAT_API_TOKEN", security.get("api_token", "") or "")
+    api_token = environment("API_TOKEN", security.get("api_token", "") or "", allow_empty=True)
 
     web_dir = str(raw.get("web", {}).get("dir", "") or "")
 

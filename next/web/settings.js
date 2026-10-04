@@ -1,6 +1,7 @@
 /* Categorised settings, browser preferences and task completion events. */
 "use strict";
 var Settings = (() => {
+  // Keep legacy storage/channel identities so rebranding preserves preferences.
   const key = "cute-cat.preferences.v1";
   const defaults = {refresh: 2, filter: "all", density: "standard", success: true, failure: true, sound: false, desktop: false};
   let prefs = {...defaults}, report = null, baseline = "", ready = false, section = "general";
@@ -222,7 +223,7 @@ var Settings = (() => {
     try {
       const bundle = await api("/task-templates/export", {method:"POST",body:JSON.stringify({ids})});
       const url = URL.createObjectURL(new Blob([JSON.stringify(bundle,null,2)], {type:"application/json"}));
-      const link = el("a", {href:url,download:"cute-cat-task-templates.json"});
+      const link = el("a", {href:url,download:"springhub-task-templates.json"});
       document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
       $("template-transfer-message").textContent = `已导出 ${bundle.templates.length} 个模板，包含所需预设，不含源文件或凭据。`;
     } catch (err) {$("template-transfer-message").textContent = "导出失败：" + UI.error(err);}
@@ -307,7 +308,7 @@ var Settings = (() => {
     const failed = event.status !== "succeeded";
     const config = test ? draft().local : prefs;
     if (!test && !(failed ? config.failure : config.success)) return;
-    const title = test ? "Cute Cat · 测试提醒" : failed ? "转换失败 / 中断" : "转换完成";
+    const title = test ? "SpringHub · 测试提醒" : failed ? "SpringHub · 转换失败 / 中断" : "SpringHub · 转换完成";
     const text = `${title}：${event.source}`;
     pageNotice(text, failed);
     if (config.sound) {try {await playSound();} catch (err) {permissionNote(UI.error(err));}}

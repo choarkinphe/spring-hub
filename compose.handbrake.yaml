@@ -1,4 +1,4 @@
-# Cute Cat — HandBrake edition, Docker Compose.
+# SpringHub — HandBrake edition, Docker Compose.
 #
 #   docker compose -f compose.handbrake.yaml up --build
 #
@@ -9,33 +9,33 @@
 #   * non-root user, read-only root filesystem, all capabilities dropped;
 #   * NO privileged mode, NO Docker socket, NO new privileges;
 #   * only loopback is published by default — put a TLS reverse proxy in front
-#     for remote access and set CUTE_CAT_API_TOKEN;
+#     for remote access and set SPRINGHUB_API_TOKEN;
 #   * network-share credentials are NOT in this file; they come from an env file
 #     or a credentials file you keep out of version control.
 
 services:
-  cute-cat:
+  springhub:
     build:
       context: .
       dockerfile: Dockerfile.handbrake
-    image: cute-cat-handbrake:local
+    image: springhub-handbrake:local
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      CUTE_CAT_CONFIG: /data/config.toml
-      CUTE_CAT_DATABASE: /data/cute-cat.db
-      CUTE_CAT_ENGINE: HandBrakeCLI
-      CUTE_CAT_MEDIA_ROOT: /media
-      CUTE_CAT_MAX_JOBS: "1"
+      SPRINGHUB_CONFIG: ${SPRINGHUB_CONFIG:-${CUTE_CAT_CONFIG:-/data/config.toml}}
+      SPRINGHUB_DATABASE: ${SPRINGHUB_DATABASE:-${CUTE_CAT_DATABASE:-/data/cute-cat.db}}
+      SPRINGHUB_ENGINE: ${SPRINGHUB_ENGINE:-${CUTE_CAT_ENGINE:-HandBrakeCLI}}
+      SPRINGHUB_MEDIA_ROOT: /media
+      SPRINGHUB_MAX_JOBS: ${SPRINGHUB_MAX_JOBS:-${CUTE_CAT_MAX_JOBS:-1}}
       # Set a token for anything beyond loopback:
-      # CUTE_CAT_API_TOKEN: ${CUTE_CAT_API_TOKEN:?set this for non-loopback access}
+      # SPRINGHUB_API_TOKEN: ${SPRINGHUB_API_TOKEN:?set this for non-loopback access}
     volumes:
       # Persistent application state (SQLite, generated config). Local only.
       - cute-cat-data:/data
       # Media workspace. Replace with a host bind mount or a network volume
       # (see the SMB/NFS examples at the bottom of this file).
-      - ${CUTE_CAT_MEDIA:-./media}:/media
+      - ${SPRINGHUB_MEDIA:-${CUTE_CAT_MEDIA:-./media}}:/media
       # Mount a pre-made config if you prefer to manage it yourself:
       # - ./config.toml:/data/config.toml:ro
     read_only: true
@@ -93,6 +93,6 @@ volumes:
 # With either network volume, also set a mount marker so the UI can tell an
 # unmounted share from an empty one:
 #   environment:
-#     CUTE_CAT_MOUNT_MARKER: ".cute-cat-mounted"
+#     SPRINGHUB_MOUNT_MARKER: ".cute-cat-mounted"
 # ...and place that file at the share root once.
 # ---------------------------------------------------------------------------

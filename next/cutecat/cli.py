@@ -1,4 +1,4 @@
-"""Entrypoint: ``python -m cutecat`` or the ``cute-cat-handbrake`` console script.
+"""Entrypoint: ``python -m cutecat`` or the ``springhub`` console script.
 
 Boot order:
 1. load configuration (TOML + environment overrides);
@@ -24,14 +24,14 @@ from .worker import Worker
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cutecat", description="Cute Cat (HandBrake) workbench")
+    parser = argparse.ArgumentParser(prog="springhub", description="SpringHub · HandBrake 转码工作台")
     parser.add_argument("--config", help="path to config.toml")
     parser.add_argument("--listen", help="override listen address, e.g. 0.0.0.0:8080")
     parser.add_argument("--database", help="override sqlite database path")
     parser.add_argument("--engine", help="override HandBrakeCLI binary path")
     parser.add_argument("--web-dir", help="override web asset directory")
     parser.add_argument("--check", action="store_true", help="print capability report and exit")
-    parser.add_argument("--version", action="version", version=f"cute-cat-handbrake {__version__}")
+    parser.add_argument("--version", action="version", version=f"springhub {__version__}")
     return parser
 
 
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         caps = engine.probe()
-        print(f"cute-cat-handbrake {__version__}")
+        print(f"springhub {__version__}")
         print(f"engine available: {caps.available}")
         print(f"binary: {caps.binary}")
         print(f"version: {caps.version_string}")
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     caps = engine.probe()
-    print(f"cute-cat-handbrake {__version__} listening on http://{config.listen}")
+    print(f"springhub {__version__} listening on http://{config.listen}")
     print(f"database: {config.database}")
     print(f"engine: {caps.binary or 'NOT FOUND'} ({caps.version_string or 'n/a'})")
     if not caps.available:

@@ -6,8 +6,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."          # repo root
 REPO="$PWD/next"
-PORT="${CUTE_CAT_HB_PORT:-18084}"
-STATE="${CUTE_CAT_HB_STATE:-$HOME/.cache/cute-cat-handbrake-preview}"
+# Preserve the legacy data location; changing a brand must not create an empty DB.
+PORT="${SPRINGHUB_HB_PORT-${CUTE_CAT_HB_PORT:-18084}}"
+STATE="${SPRINGHUB_HB_STATE-${CUTE_CAT_HB_STATE:-$HOME/.cache/cute-cat-handbrake-preview}}"
 MEDIA="$STATE/media"
 OUT="$STATE/out"
 
@@ -57,6 +58,6 @@ read_only = false
 CONFIG
 
 export PYTHONPATH="$REPO"
-echo "Cute Cat (HandBrake) preview: http://127.0.0.1:$PORT"
+echo "SpringHub (HandBrake) preview: http://127.0.0.1:$PORT"
 echo "State: $STATE"
-exec python3 -m cutecat --config "$STATE/config.toml"
+exec python3 -m springhub --config "$STATE/config.toml"

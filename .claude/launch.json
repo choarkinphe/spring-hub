@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "cute-cat-preview",
+      "name": "springhub-preview",
       "runtimeExecutable": "wsl",
       "runtimeArgs": [
         "-d",
@@ -10,16 +10,16 @@
         "--",
         "bash",
         "-lc",
-        "CUTE_CAT_HB_PORT=18087 CUTE_CAT_HB_STATE=\"$HOME/.cache/cute-cat-handbrake-preview-18087\" bash .claude/preview.sh"
+        "SPRINGHUB_HB_PORT=18087 SPRINGHUB_HB_STATE=\"$HOME/.cache/cute-cat-handbrake-preview-18087\" bash .claude/preview.sh"
       ],
       "port": 18087,
       "autoPort": false,
       "url": "http://127.0.0.1:18087"
     },
     {
-      "name": "cute-cat-queue-preview",
+      "name": "springhub-queue-preview",
       "runtimeExecutable": "wsl",
-      "runtimeArgs": ["-d", "Ubuntu", "--", "bash", "-lc", "CUTE_CAT_HB_PORT=18085 CUTE_CAT_HB_STATE=/tmp/cute-cat-queue-preview bash next/preview.sh"],
+      "runtimeArgs": ["-d", "Ubuntu", "--", "bash", "-lc", "SPRINGHUB_HB_PORT=18085 SPRINGHUB_HB_STATE=/tmp/cute-cat-queue-preview bash next/preview.sh"],
       "port": 18085,
       "autoPort": false,
       "url": "http://127.0.0.1:18085"

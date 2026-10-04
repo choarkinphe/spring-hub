@@ -986,6 +986,24 @@ test("Chinese labels preserve original values, official names and user content",
   assert.doesNotMatch(html,/>Tune<|>Level<|Chroma Smooth|placeholder="auto"/);
 });
 
+test("SpringHub theme and branding keep legacy preference identities", () => {
+  const html=fs.readFileSync(path.join(__dirname,"../web/index.html"),"utf8");
+  const css=fs.readFileSync(path.join(__dirname,"../web/styles.css"),"utf8");
+  const settings=fs.readFileSync(path.join(__dirname,"../web/settings.js"),"utf8");
+  assert.match(html,/<title>SpringHub/);
+  assert.match(html,/aria-label="SpringHub"/);
+  assert.match(html,/brand-spring/);
+  assert.match(html,/brand-hub/);
+  assert.doesNotMatch(html,/Cute Cat|🐱/);
+  assert.match(css,/--accent: #ff9900/);
+  assert.match(css,/--bg: #000000/);
+  assert.doesNotMatch(css,/#4f9cf9|79,156,249|#40536b|#a9c9f3|linear-gradient/);
+  assert.match(settings,/SpringHub · 测试提醒/);
+  assert.match(settings,/springhub-task-templates\.json/);
+  assert.match(settings,/cute-cat\.preferences\.v1/);
+  assert.match(settings,/cute-cat\.notifications\.v1/);
+});
+
 test("numeric choice reads zero/empty without losing semantics", () => {
   const { context, control } = harness();
   const node = control("dim-modulus");

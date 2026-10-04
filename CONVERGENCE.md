@@ -98,6 +98,13 @@
 - 七标签英文主字段/占位符与编码速度/调优/档次/混音已中文化；能力报告新增中文展示字段并保留机器状态；已知错误显示中文建议，未知错误与原始诊断在系统详情可查。真实命令、技术标识、路径、JSON和引擎原始日志保留，不假译所有上游内容。
 - WSL 257 Python / 54 Node通过；实测设置分段控件读取/保存后原枚举仍有效，维护天数30预览200，命名非法400显示中文且原文可查，七标签/官方预设中文搜索/能力报告正常。375px六设置分类、七任务标签、编码器及能力报告无横向溢出，768px设置/报告正常。验收未创建转码任务，界面偏好恢复2秒，不改变用户媒体。
 
+### SpringHub 品牌与黑橙主题（2026-10-04）
+
+- 公开品牌更名 SpringHub，白色Spring＋橙底黑字Hub字标替换猫图标，新增本地SVG图标；全站纯黑/深灰/白/橙（#ff9900），链接/焦点/选中/进度/抽屉统一，保留成功/错误语义色。中文功能与参数协议不变。
+- 新入口 python -m springhub、SPRINGHUB_* 环境变量优先，旧cutecat入口/CUTE_CAT_*仍兼容；默认预览名springhub-preview。数据库文件、旧预览状态路径、卷key、挂载标记、偏好/通知键和模板bundle格式保留历史身份，未迁移/删除数据。Compose服务改springhub，升级需停止旧实例并保留项目名/卷，Docker未实测。
+- WSL 262 Python / 55 Node通过，脚本/JSON配置/JS语法/git diff --check正常；覆盖新旧CLI版本、新变量优先/旧fallback、空令牌不继承、原数据名/偏好/bundle、字标/新色板及无旧蓝色硬编码。
+- 实测springhub-preview在18087 LISTEN，health与本地SVG均HTTP200、真实HandBrake 1.11；数据库仍/home/xiaohua/.cache/cute-cat-handbrake-preview-18087/cute-cat.db，任务统计未变化。页头/按钮#ff9900、背景#000、面板#111实测，测试通知显示SpringHub。桌面、375px七标签/六设置/预设、768px设置均无横溢出；没有提交新转码任务或更改用户设置。未声称GPU/Docker/远程盘验证。
+
 ### 验证证据
 
 - WSL Ubuntu：`python3 -m unittest discover -s tests -t tests` 共 **240 项通过**；Node 的 `test_choices.cjs` 共 **47 项通过**。新增覆盖预设快照、同名身份、稳定 ID、v1 数据库升级、两阶段准入、检测未知与显式覆盖，以及 CLI 可选参数、滤镜/颜色/无损、音轨/SRT、显式重置、零值与前端 null payload。API、worker、Store、spec 回归覆盖同源/硬链接、输出抢占、取消/停机/超时、挂载丢失、附属文件路径与参数映射。

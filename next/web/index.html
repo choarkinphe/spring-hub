@@ -3,17 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cute Cat · HandBrake 工作台</title>
+  <title>SpringHub · HandBrake 工作台</title>
+  <meta name="theme-color" content="#000000" />
+  <link rel="icon" type="image/svg+xml" href="/assets/brand.svg" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="logo">🐱</span>
-      <div>
-        <h1>Cute Cat</h1>
-        <p class="subtitle">HandBrake 转码工作台</p>
-      </div>
+      <h1 class="brand-wordmark" aria-label="SpringHub"><span class="brand-spring">Spring</span><span class="brand-hub">Hub</span></h1>
+      <p class="subtitle">HandBrake 转码工作台</p>
     </div>
     <button id="btn-open-settings" class="btn btn-icon" type="button" title="系统设置" aria-label="系统设置" aria-haspopup="dialog" aria-controls="settings-drawer">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9.5 3h5l.5 2.5 2 1.2 2.4-.8 2.5 4.3-1.9 1.3v1l1.9 1.3-2.5 4.3-2.4-.8-2 1.2-.5 2.5h-5L9 18.5l-2-1.2-2.4.8-2.5-4.3L4 12.5v-1l-1.9-1.3 2.5-4.3 2.4.8 2-1.2L9.5 3Z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -57,7 +56,7 @@
       </section>
     </section>
   </main>
-  <footer class="footer"><span>功能矩阵见 <a href="#" id="link-matrix">能力报告</a>。</span><span id="version-tag"></span></footer>
+  <footer class="footer"><span>SpringHub · 功能矩阵见 <a href="#" id="link-matrix">能力报告</a>。</span><span id="version-tag"></span></footer>
 
   <dialog id="settings-drawer" class="preset-drawer settings-drawer" aria-labelledby="settings-title">
     <header class="preset-drawer-header"><div><h2 id="settings-title">设置</h2><p>按你的工作方式安排转换、输出和提醒。</p></div><button id="btn-close-settings" class="btn" type="button">关闭</button></header>

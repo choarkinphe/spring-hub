@@ -1,4 +1,4 @@
-/* Cute Cat — HandBrake workbench (native ES2020, no framework, no build step). */
+/* SpringHub — HandBrake workbench (native ES2020, no framework, no build step). */
 "use strict";
 
 const API = "/api/v1";

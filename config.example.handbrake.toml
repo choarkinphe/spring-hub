@@ -1,6 +1,6 @@
-# Cute Cat (HandBrake edition) — example configuration.
+# SpringHub (HandBrake edition) — example configuration.
 # Copy to config.toml and adjust. Secrets do NOT belong in this file: the API
-# token is read from the environment (CUTE_CAT_API_TOKEN) only.
+# token is read from the environment (SPRINGHUB_API_TOKEN) only.
 
 [server]
 # Bind address. Compose keeps this on the container network; publish it to
@@ -12,7 +12,7 @@ database = "/data/cute-cat.db"
 media_root = "/media"
 
 [security]
-# Leave empty for local/trusted use. Set CUTE_CAT_API_TOKEN in the environment
+# Leave empty for local/trusted use. Set SPRINGHUB_API_TOKEN in the environment
 # for anything reachable beyond the host. Empty here on purpose.
 api_token = ""
 
@@ -34,7 +34,7 @@ extra_args = []
 # a root id plus a *relative* path — never an absolute path.
 [[storage_roots]]
 id = "media"
-label = "Media (read/write)"
+label = "媒体目录（可读写）"
 path = "/media"
 read_only = false
 # Optional marker file proving a network share is actually mounted; when it is
@@ -46,7 +46,7 @@ mount_marker = ".cute-cat-mounted"
 # written to. Uncomment to use.
 # [[storage_roots]]
 # id = "library"
-# label = "Library (read-only)"
+# label = "媒体库（只读）"
 # path = "/library"
 # read_only = true
 # mount_marker = ".cute-cat-mounted"

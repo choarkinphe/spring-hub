@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cute Cat (HandBrake edition) container entrypoint.
+# SpringHub (HandBrake edition) container entrypoint.
 #
 # Responsibilities:
 #   * ensure /data exists and is writable by the service user;
@@ -14,9 +14,10 @@
 
 set -eu
 
-DATA_DIR="${CUTE_CAT_DATA_DIR:-/data}"
-CONFIG_FILE="${CUTE_CAT_CONFIG:-$DATA_DIR/config.toml}"
-ENGINE="${CUTE_CAT_ENGINE:-HandBrakeCLI}"
+# New names take precedence; legacy names and persistent paths stay compatible.
+DATA_DIR="${SPRINGHUB_DATA_DIR-${CUTE_CAT_DATA_DIR:-/data}}"
+CONFIG_FILE="${SPRINGHUB_CONFIG-${CUTE_CAT_CONFIG:-$DATA_DIR/config.toml}}"
+ENGINE="${SPRINGHUB_ENGINE-${CUTE_CAT_ENGINE:-HandBrakeCLI}}"
 
 mkdir -p "$DATA_DIR"
 
@@ -24,9 +25,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
   echo "[entrypoint] no config at $CONFIG_FILE — generating a default one"
   cat > "$CONFIG_FILE" <<CONFIG
 [server]
-listen = "${CUTE_CAT_LISTEN:-0.0.0.0:8080}"
-database = "${CUTE_CAT_DATABASE:-$DATA_DIR/cute-cat.db}"
-media_root = "${CUTE_CAT_MEDIA_ROOT:-/media}"
+listen = "${SPRINGHUB_LISTEN-${CUTE_CAT_LISTEN:-0.0.0.0:8080}}"
+database = "${SPRINGHUB_DATABASE-${CUTE_CAT_DATABASE:-$DATA_DIR/cute-cat.db}}"
+media_root = "${SPRINGHUB_MEDIA_ROOT-${CUTE_CAT_MEDIA_ROOT:-/media}}"
 
 [security]
 api_token = ""
@@ -34,17 +35,17 @@ api_token = ""
 [engine]
 handbrake_bin = "$ENGINE"
 ffprobe_bin = "ffprobe"
-max_concurrent_jobs = ${CUTE_CAT_MAX_JOBS:-1}
+max_concurrent_jobs = ${SPRINGHUB_MAX_JOBS-${CUTE_CAT_MAX_JOBS:-1}}
 refuse_overwrite = true
 job_timeout_seconds = 0
 extra_args = []
 
 [[storage_roots]]
 id = "media"
-label = "Media"
-path = "${CUTE_CAT_MEDIA_ROOT:-/media}"
+label = "媒体目录"
+path = "${SPRINGHUB_MEDIA_ROOT-${CUTE_CAT_MEDIA_ROOT:-/media}}"
 read_only = false
-mount_marker = "${CUTE_CAT_MOUNT_MARKER:-.cute-cat-mounted}"
+mount_marker = "${SPRINGHUB_MOUNT_MARKER-${CUTE_CAT_MOUNT_MARKER:-.cute-cat-mounted}}"
 CONFIG
 fi
 

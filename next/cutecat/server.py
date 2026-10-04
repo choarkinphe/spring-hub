@@ -239,7 +239,7 @@ def _feature_matrix() -> list[dict]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = f"CuteCat/{__version__}"
+    server_version = f"SpringHub/{__version__}"
     state: AppState  # set on the server class
 
     # -- logging -----------------------------------------------------------
