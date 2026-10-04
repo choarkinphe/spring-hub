@@ -268,9 +268,37 @@ def main(argv: list[str]) -> int:
         return _emit_help()
     if "--preset-list" in argv:
         return _emit_presets()
+    document = None
     if "--preset-import-file" in argv:
         path = argv[argv.index("--preset-import-file") + 1]
-        return _import_preset(path)
+        result = _import_preset(path)
+        if result:
+            return result
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+        if "--preset" not in argv:
+            return 0
+    if "--preset" in argv:
+        name = argv[argv.index("--preset") + 1]
+        if document:
+            selected = next((entry for entry in document["PresetList"] if entry.get("PresetName") == name), None)
+        else:
+            official = {"General/Fast 1080p30", "General/HQ 1080p30 Surround",
+                        "General/Super HQ 1080p30 Surround", "Matroska/H.265 MKV 1080p30",
+                        "Matroska/H.265 MKV 2160p60 4K", "Web/Gmail Large 3 Minutes 720p30"}
+            selected = {"PresetName": name, "VideoEncoder": "x265" if name.startswith("Matroska/") else "x264",
+                        "VideoPreset": "fast", "FileFormat": "av_mp4", "AudioList": [{"AudioEncoder": "av_aac"}],
+                        "AudioEncoderFallback": "av_aac"} if name in official else None
+        if not selected:
+            sys.stderr.write(f"Unknown preset: {name}\n")
+            return 1
+        selected = {"VideoEncoder": "x264", "AudioList": [{"AudioEncoder": "av_aac"}], **selected}
+        if "--preset-export" in argv:
+            selected = {**selected, "PresetName": argv[argv.index("--preset-export") + 1]}
+            print(json.dumps({"PresetList": [selected], "VersionMajor": 72, "VersionMinor": 0, "VersionMicro": 0}))
+            return 0
+        if "-e" not in argv:
+            argv = [*argv, "-e", selected["VideoEncoder"]]
 
     source = None
     dest = None

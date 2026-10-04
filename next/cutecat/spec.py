@@ -77,9 +77,9 @@ VIDEO_LEVELS = {
 
 FRAMERATES = {"auto", "5", "10", "12", "15", "23.976", "24", "25", "29.97", "30", "50", "59.94", "60"}
 
-VIDEO_QUALITY_TYPES = {"rf", "cqp", "vbr", "abr", "lossless", "constant", "crf"}
+VIDEO_QUALITY_TYPES = {"rf", "vbr", "abr", "lossless", "constant", "crf"}
 
-DEINTERLACE = {"off", "fast", "slow", "slower", "bob", "custom"}
+DEINTERLACE = {"off", "fast", "slow", "slower", "default", "skip-spatial", "bob", "custom"}
 DENOISE = {"off", "nlmeans", "hqdn3d", "custom"}
 DETELECINE = {"off", "default", "custom"}
 ROTATION = {"off", "90", "180", "270"}
@@ -217,8 +217,8 @@ class VideoSpec:
             spec.two_pass = _as_bool(data["two_pass"])
         if "turbo" in data:
             spec.turbo = _as_bool(data["turbo"])
-        if "preset" in data and data["preset"] not in (None, ""):
-            spec.preset = _require_choice("video.preset", data["preset"], VIDEO_PRESETS)
+        if "preset" in data:
+            spec.preset = _require_choice("video.preset", data["preset"], VIDEO_PRESETS) if data["preset"] not in (None, "") else None
         if "tune" in data and data["tune"] not in (None, "", "none"):
             spec.tune = _require_choice("video.tune", data["tune"], VIDEO_TUNES)
         if "profile" in data and data["profile"] not in (None, "", "auto"):
@@ -233,8 +233,18 @@ class VideoSpec:
             spec.vfr = _as_bool(data["vfr"])
         if "cfr" in data:
             spec.cfr = _as_bool(data["cfr"])
-        if spec.vfr and spec.cfr:
-            raise SpecError("video.vfr and video.cfr are mutually exclusive")
+        if sum((spec.vfr, spec.cfr, spec.peak_framerate)) > 1:
+            raise SpecError("video.vfr, video.cfr and video.peak_framerate are mutually exclusive")
+        if spec.quality_type in ("abr", "vbr") and not spec.bitrate_kbps:
+            raise SpecError("bitrate mode requires video.bitrate_kbps")
+        if spec.two_pass and spec.quality_type not in ("abr", "vbr"):
+            raise SpecError("two-pass requires bitrate mode")
+        if spec.turbo and not spec.two_pass:
+            raise SpecError("turbo requires two-pass")
+        if spec.quality_type == "lossless" and spec.encoder not in ("x264", "x264_10bit", "x265", "x265_10bit", "x265_12bit"):
+            raise SpecError("lossless is implemented only for x264/x265; use the encoder's quality mode otherwise")
+        if spec.quality_type in ("rf", "crf", "constant") and spec.quality is None:
+            raise SpecError("quality mode requires video.quality")
         return spec
 
 
@@ -285,6 +295,13 @@ class AudioTrackSpec:
             if source != "auto":
                 source = str(_bounded_int("audio.source", source, 1, 64))
             spec.source = source
+        if spec.language or spec.default_track:
+            raise SpecError("audio language/default overrides are not implemented")
+        if spec.name and "," in spec.name:
+            raise SpecError("audio.name cannot contain commas (CLI track-list separator)")
+        if spec.encoder in ("copy", "none") and any(value not in (None, "auto", 0) for value in
+                (spec.mixdown, spec.samplerate, spec.bitrate, spec.gain, spec.drc)):
+            raise SpecError("audio copy/none cannot apply encoding parameters")
         return spec
 
 
@@ -331,12 +348,16 @@ class SubtitleSpec:
     srt_codeset: str | None = None
     default_track: int | None = None
     forced_only: bool = False
+    srt_language: str = "und"
+    srt_offset_ms: int = 0
+    srt_burn: bool = False
+    srt_default: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "SubtitleSpec":
         _reject_unknown("subtitles", data, {
             "behavior", "tracks", "burn_track", "srt_file", "srt_codeset",
-            "default_track", "forced_only",
+            "default_track", "forced_only", "srt_language", "srt_offset_ms", "srt_burn", "srt_default",
         })
         spec = cls()
         if "behavior" in data:
@@ -351,8 +372,21 @@ class SubtitleSpec:
             # A subtitle file must be a *relative* path inside a storage root;
             # the worker resolves it. Never an absolute host path.
             spec.srt_file = _safe_relative_file("subtitles.srt_file", data["srt_file"])
+            if "," in spec.srt_file:
+                raise SpecError("subtitles.srt_file must name a single file without commas")
         if "srt_codeset" in data and data["srt_codeset"]:
             spec.srt_codeset = _safe_label("subtitles.srt_codeset", data["srt_codeset"])
+            if not __import__("re").fullmatch(r"[A-Za-z0-9_.-]+", spec.srt_codeset):
+                raise SpecError("subtitles.srt_codeset must name a single character encoding")
+        if "srt_language" in data:
+            spec.srt_language = str(data["srt_language"])
+            if not __import__("re").fullmatch(r"[a-z]{3}", spec.srt_language):
+                raise SpecError("subtitles.srt_language must be an ISO 639-2 code")
+        if "srt_offset_ms" in data:
+            spec.srt_offset_ms = _bounded_int("subtitles.srt_offset_ms", data["srt_offset_ms"], -86400000, 86400000) or 0
+        for key in ("srt_burn", "srt_default"):
+            if key in data:
+                setattr(spec, key, _as_bool(data[key]))
         tracks = data.get("tracks") or []
         if not isinstance(tracks, list):
             raise SpecError("subtitles.tracks must be a list")
@@ -366,7 +400,26 @@ class SubtitleSpec:
                     entry[flag] = _as_bool(track[flag])
             if "name" in track and track["name"]:
                 entry["name"] = _safe_label("subtitles.track.name", track["name"])
+            if not entry.get("track"):
+                raise SpecError("subtitle track requires a track number")
+            if any(entry.get(key) for key in ("burn", "default", "forced", "name")):
+                raise SpecError("per-track subtitle overrides are not implemented; use top-level subtitle options")
             spec.tracks.append(entry)
+        if spec.behavior == "add":
+            raise SpecError("subtitles.behavior=add is not implemented; specify tracks")
+        count = len(spec.tracks) or (1 if spec.behavior in ("foreign", "burn", "default", "add-first", "auto") else 0)
+        for key in ("burn_track", "default_track"):
+            value = getattr(spec, key)
+            if value and value > count:
+                raise SpecError(f"subtitles.{key} indexes the selected source subtitle list, not the source track number")
+        if spec.forced_only and not count:
+            raise SpecError("forced_only requires a selected source subtitle")
+        if not spec.srt_file and any((spec.srt_codeset, spec.srt_language != "und", spec.srt_offset_ms, spec.srt_burn, spec.srt_default)):
+            raise SpecError("SRT options require subtitles.srt_file")
+        if spec.srt_burn and (spec.burn_track or spec.behavior == "burn"):
+            raise SpecError("only one source or SRT subtitle may be burned")
+        if spec.srt_default and (spec.default_track or spec.behavior == "default"):
+            raise SpecError("only one source or SRT subtitle may be default")
         return spec
 
 
@@ -397,6 +450,10 @@ class ChapterSpec:
                 "name": _safe_label("chapter.name", marker.get("name") or "Chapter"),
             }
             spec.markers.append(entry)
+        if spec.markers:
+            raise SpecError("inline chapter markers are not implemented; use marker_file")
+        if spec.marker_file and spec.mode != "markers":
+            raise SpecError("marker_file requires chapters.mode=markers")
         return spec
 
 
@@ -437,12 +494,18 @@ class DimensionSpec:
                 {"auto", "none", "strict", "loose", "custom"},
             )
         if "modulus" in data and data["modulus"] not in (None, ""):
-            modulus = int(data["modulus"])
+            modulus = _bounded_int("dimensions.modulus", data["modulus"], 2, 32)
             if modulus not in (2, 4, 8, 16, 32):
                 raise SpecError("dimensions.modulus must be 2, 4, 8, 16 or 32")
             spec.modulus = modulus
         if "keep_aspect" in data:
             spec.keep_aspect = _as_bool(data["keep_aspect"])
+        if not spec.keep_aspect:
+            raise SpecError("dimensions.keep_aspect=false is not implemented")
+        if spec.anamorphic in ("strict", "custom"):
+            raise SpecError("strict anamorphic is not supported by this CLI; custom requires a pixel-aspect/display-width model")
+        if spec.crop_mode != "custom" and any(getattr(spec, "crop_" + side) is not None for side in ("top", "bottom", "left", "right")):
+            raise SpecError("crop values require dimensions.crop_mode=custom")
         return spec
 
 
@@ -503,6 +566,39 @@ class FilterSpec:
         ):
             if key in data and data[key] not in (None, "", "auto"):
                 setattr(spec, key, _require_choice(f"filters.{key}", data[key], allowed))
+        custom_keys = {
+            "deinterlace": {"mode", "parity"},
+            "denoise": {"y-spatial", "cb-spatial", "cr-spatial", "y-temporal", "cb-temporal", "cr-temporal"},
+            "detelecine": {"skip-left", "skip-right", "skip-top", "skip-bottom", "strict-breaks", "plane", "parity", "disable"},
+        }
+        for key, allowed in custom_keys.items():
+            custom = getattr(spec, key + "_custom")
+            if getattr(spec, key) == "custom":
+                if not custom:
+                    raise SpecError(f"filters.{key}=custom requires {key}_custom")
+                pairs = custom.split(":")
+                seen = set()
+                for pair in pairs:
+                    parts = pair.split("=")
+                    if len(parts) != 2 or not parts[1] or parts[0] not in allowed or parts[0] in seen:
+                        raise SpecError(f"filters.{key}_custom requires supported key=value pairs")
+                    seen.add(parts[0])
+                    limits = {"mode": (0, 7), "parity": (0, 1), "disable": (0, 1), "plane": (0, 2), "strict-breaks": (-1, 1)}
+                    low, high = limits.get(parts[0], (0, 100))
+                    _bounded_float(f"filters.{key}_custom.{parts[0]}", parts[1], low, high)
+                    if key != "denoise" and not __import__("re").fullmatch(r"-?\d+", parts[1]):
+                        raise SpecError(f"filters.{key}_custom.{parts[0]} must be an integer")
+            elif custom:
+                raise SpecError(f"{key}_custom requires filters.{key}=custom")
+        if data.get("color_range") == "auto":
+            spec.color_range = "auto"
+        if spec.lapsharp and spec.unsharp:
+            raise SpecError("lapsharp and unsharp are alternative sharpening filters")
+        for key, allowed in (("color_matrix", {"bt709", "bt601", "bt2020"}),
+                             ("color_primaries", {"bt709", "bt2020", "smpte240m"}),
+                             ("color_transfer", {"bt709", "smpte2084"})):
+            if getattr(spec, key) and getattr(spec, key) not in allowed:
+                raise SpecError(f"filters.{key} has no unambiguous supported CLI mapping")
         return spec
 
 
@@ -554,6 +650,8 @@ class TranscodeSpec:
             spec.filters = FilterSpec.from_dict(data["filters"] or {})
         if "metadata" in data:
             spec.metadata = _safe_metadata(data["metadata"])
+            if spec.metadata:
+                raise SpecError("metadata overrides are not implemented")
         return spec
 
     def to_dict(self) -> dict:
@@ -577,7 +675,28 @@ class TranscodeSpec:
 # -- spec -> CLI arguments -------------------------------------------------
 
 
-def build_engine_args(spec: TranscodeSpec) -> list[str]:
+def prepare_job_preset(document: dict | None, overrides: dict) -> dict | None:
+    """Reset values without a CLI reset flag in an isolated task snapshot."""
+    if not document:
+        return None
+    from copy import deepcopy
+
+    result = deepcopy(document)
+    entry = result["PresetList"][0]
+    video = overrides.get("video") or {}
+    if video.get("framerate") == "auto":
+        entry["VideoFramerate"] = "auto"
+    if any(key in video and not _as_bool(video[key]) for key in ("vfr", "cfr", "peak_framerate")):
+        entry["VideoFramerateMode"] = "vfr"
+    subtitles = overrides.get("subtitles") or {}
+    if "forced_only" in subtitles and not _as_bool(subtitles["forced_only"]):
+        entry["SubtitleAddForeignAudioSearch"] = False
+    if "copy_mask" in (overrides.get("audio") or {}) and not overrides["audio"]["copy_mask"]:
+        entry["AudioCopyMask"] = []
+    return result
+
+
+def build_engine_args(spec: TranscodeSpec, *, overrides: dict | None = None, preset: dict | None = None) -> list[str]:
     """Translate a validated spec into HandBrakeCLI arguments.
 
     Only a fixed vocabulary of flags is emitted, each with a validated value.
@@ -601,22 +720,21 @@ def build_engine_args(spec: TranscodeSpec) -> list[str]:
     args.extend(["-e", video.encoder])
 
     if video.quality_type == "lossless":
-        args.append("--lossless")
-    elif video.quality is not None:
-        if video.quality_type in ("rf", "crf"):
-            args.extend(["-q", _fmt(video.quality)])
-        elif video.quality_type == "cqp":
-            args.extend(["--cqp", _fmt(video.quality)])
-        elif video.quality_type in ("vbr", "abr"):
-            if video.bitrate_kbps:
-                args.extend(["-b", str(video.bitrate_kbps)])
-        else:
-            args.extend(["-q", _fmt(video.quality)])
+        effective_encoder = video.encoder
+        if preset and "encoder" not in ((overrides or {}).get("video") or {}):
+            effective_encoder = preset["PresetList"][0].get("VideoEncoder", "")
+        if not effective_encoder.startswith(("x264", "x265")):
+            raise SpecError("lossless is implemented only for x264/x265")
+        args.extend(["-q", "0"])
+        if effective_encoder.startswith("x265"):
+            args.extend(["--encopts", "lossless=1"])
+    elif video.quality is not None and video.quality_type not in ("vbr", "abr"):
+        args.extend(["-q", _fmt(video.quality)])
 
     if video.bitrate_kbps and video.quality_type in ("vbr", "abr"):
         args.extend(["-b", str(video.bitrate_kbps)])
     if video.two_pass:
-        args.append("--two-pass")
+        args.append("--multi-pass")
     if video.turbo:
         args.append("--turbo")
     if video.preset:
@@ -642,9 +760,8 @@ def build_engine_args(spec: TranscodeSpec) -> list[str]:
         args.extend(["-w", str(dim.width)])
     if dim.height:
         args.extend(["-l", str(dim.height)])
-    if dim.crop_mode == "none":
-        args.extend(["--crop-mode", "none"])
-    elif dim.crop_mode == "custom":
+    args.extend(["--crop-mode", dim.crop_mode])
+    if dim.crop_mode == "custom":
         args.extend([
             "--crop",
             "{top}:{bottom}:{left}:{right}".format(
@@ -654,51 +771,48 @@ def build_engine_args(spec: TranscodeSpec) -> list[str]:
                 right=dim.crop_right or 0,
             ),
         ])
-    if dim.anamorphic != "auto":
-        args.extend(["--anamorphic", dim.anamorphic])
+    args.append({"auto": "--auto-anamorphic", "none": "--non-anamorphic", "loose": "--loose-anamorphic"}[dim.anamorphic])
     if dim.modulus:
         args.extend(["--modulus", str(dim.modulus)])
 
     # -- Filters -----------------------------------------------------------
     filters = spec.filters
     if filters.deinterlace != "off":
-        if filters.deinterlace == "custom" and filters.deinterlace_custom:
-            args.extend(["--deinterlace", filters.deinterlace_custom])
-        else:
-            args.extend(["--deinterlace", filters.deinterlace])
+        args.extend(["--no-comb-detect", "--no-decomb", "--no-bwdif"])
+        value = {"fast": "skip-spatial", "slow": "mode=3", "slower": "mode=3", "default": "mode=3"}.get(filters.deinterlace, filters.deinterlace)
+        args.append("--deinterlace=" + (filters.deinterlace_custom if filters.deinterlace == "custom" else value))
     if filters.denoise != "off":
-        if filters.denoise == "custom" and filters.denoise_custom:
-            args.extend(["--denoise", filters.denoise_custom])
-        else:
-            args.extend(["--denoise", filters.denoise])
+        flag = "--nlmeans" if filters.denoise == "nlmeans" else "--hqdn3d"
+        args.append("--no-hqdn3d" if flag == "--nlmeans" else "--no-nlmeans")
+        args.append(flag + "=" + (filters.denoise_custom if filters.denoise == "custom" else "medium"))
     if filters.detelecine != "off":
-        if filters.detelecine == "custom" and filters.detelecine_custom:
-            args.extend(["--detelecine", filters.detelecine_custom])
-        else:
-            args.extend(["--detelecine", filters.detelecine])
+        args.append("--detelecine=" + (filters.detelecine_custom if filters.detelecine == "custom" else "default"))
     if filters.deblock is not None:
-        args.extend(["--deblock", str(filters.deblock)])
-    if filters.rotate != "off":
-        args.extend(["--rotate", filters.rotate])
+        args.append("--deblock=strength=strong:thresh=" + str(filters.deblock))
+    rotate_fields = (overrides or {}).get("filters") or {}
+    if overrides is None or "rotate" in rotate_fields or "hflip" in rotate_fields:
+        angle = filters.rotate if filters.rotate != "off" else "0"
+        hflip = int(filters.hflip)
+        if preset:
+            inherited = preset["PresetList"][0].get("PictureRotate", "angle=0:hflip=0")
+            settings = dict(part.split("=", 1) for part in str(inherited).split(":") if "=" in part)
+            if "rotate" not in rotate_fields:
+                angle = settings.get("angle", "0")
+            if "hflip" not in rotate_fields:
+                hflip = int(settings.get("hflip", "0"))
+        args.append(f"--rotate=angle={angle}:hflip={hflip}")
     if filters.grayscale:
         args.append("--grayscale")
-    if filters.hflip:
-        args.append("--hflip")
-    if filters.chroma_smooth:
-        args.append("--chroma-smooth")
-    if filters.lapsharp:
-        args.append("--lapsharp")
-    if filters.unsharp:
-        args.append("--unsharp")
-    for key, flag in (
-        ("color_matrix", "--color-matrix"),
-        ("color_range", "--color-range"),
-        ("color_primaries", "--color-primaries"),
-        ("color_transfer", "--color-transfer"),
-    ):
-        value = getattr(filters, key)
-        if value:
-            args.extend([flag, value])
+    for key in ("chroma_smooth", "lapsharp", "unsharp"):
+        if getattr(filters, key):
+            args.append("--" + key.replace("_", "-") + "=medium")
+    if filters.color_matrix:
+        args.extend(["--color-matrix", {"bt709": "709", "bt601": "601", "bt2020": "2020"}[filters.color_matrix]])
+    if filters.color_range:
+        args.extend(["--color-range", filters.color_range])
+    colors = [f"{key}={getattr(filters, 'color_' + key)}" for key in ("primaries", "transfer") if getattr(filters, "color_" + key)]
+    if colors:
+        args.extend(["--colorspace", ":".join(colors)])
 
     # -- Audio -------------------------------------------------------------
     audio = spec.audio
@@ -706,8 +820,10 @@ def build_engine_args(spec: TranscodeSpec) -> list[str]:
         args.extend(["--audio-copy-mask", audio.copy_mask])
     if audio.fallback_encoder:
         args.extend(["--audio-fallback", audio.fallback_encoder])
+    if not audio.tracks:
+        args.extend(["--audio", "none"])
     if audio.tracks:
-        args.extend(["--audio", ",".join(str(t.track) for t in audio.tracks)])
+        args.extend(["--audio", ",".join(t.source if t.source != "auto" else str(t.track) for t in audio.tracks)])
         encoders = ",".join(t.encoder for t in audio.tracks)
         args.extend(["-E", encoders])
         mixdowns = ",".join((t.mixdown or "auto") for t in audio.tracks)
@@ -715,7 +831,7 @@ def build_engine_args(spec: TranscodeSpec) -> list[str]:
         bitrates = ",".join((t.bitrate or "auto") for t in audio.tracks)
         args.extend(["-B", bitrates])
         samplerates = ",".join((t.samplerate or "auto") for t in audio.tracks)
-        args.extend(["--ar", samplerates])
+        args.extend(["--arate", ",".join(_fmt(float(rate) / 1000) if rate != "auto" else rate for rate in samplerates.split(","))])
         gains = ",".join(_fmt(t.gain) if t.gain is not None else "0" for t in audio.tracks)
         if any(t.gain is not None for t in audio.tracks):
             args.extend(["--gain", gains])
@@ -724,7 +840,7 @@ def build_engine_args(spec: TranscodeSpec) -> list[str]:
             args.extend(["--drc", drcs])
         names = ",".join(t.name or "" for t in audio.tracks)
         if any(t.name for t in audio.tracks):
-            args.extend(["--audio-track-names", names])
+            args.extend(["--aname", names])
         if any(t.default_track for t in audio.tracks):
             default_index = next(
                 (str(i + 1) for i, t in enumerate(audio.tracks) if t.default_track), "1"
@@ -733,28 +849,136 @@ def build_engine_args(spec: TranscodeSpec) -> list[str]:
 
     # -- Subtitles ---------------------------------------------------------
     subs = spec.subtitles
-    if subs.behavior != "none":
-        args.extend(["--subtitle", subs.behavior])
     if subs.tracks:
-        args.extend(["--subtitle-tracks", ",".join(str(t["track"]) for t in subs.tracks if t.get("track"))])
+        args.extend(["--subtitle", ",".join(str(t["track"]) for t in subs.tracks)])
+    elif subs.behavior == "foreign":
+        args.extend(["--subtitle", "scan"])
+    elif subs.behavior in ("burn", "default", "add-first", "auto"):
+        args.extend(["--subtitle", "1"])
+    elif subs.behavior == "none":
+        args.extend(["--subtitle", "none"])
     if subs.burn_track:
-        args.extend(["--subtitle-burn", str(subs.burn_track)])
+        args.append("--subtitle-burned=" + str(subs.burn_track))
+    elif subs.behavior == "burn":
+        args.append("--subtitle-burned=1")
+    else:
+        args.append("--subtitle-burned=none")
     if subs.default_track:
-        args.extend(["--subtitle-default", str(subs.default_track)])
-    if subs.forced_only:
-        args.append("--subtitle-forced")
+        args.append("--subtitle-default=" + str(subs.default_track))
+    elif subs.behavior == "default":
+        args.append("--subtitle-default=1")
+    else:
+        args.append("--subtitle-default=none")
+    args.append("--subtitle-forced=1" if subs.forced_only else "--subtitle-forced=none")
     if subs.srt_file:
-        args.extend(["--srt-file", subs.srt_file])
-    if subs.srt_codeset:
-        args.extend(["--srt-codeset", subs.srt_codeset])
+        args.extend(["--srt-file", subs.srt_file, "--srt-codeset", subs.srt_codeset or "UTF-8",
+                     "--srt-lang", subs.srt_language, "--srt-offset", str(subs.srt_offset_ms)])
+        if subs.srt_burn:
+            args.append("--srt-burn=1")
+        if subs.srt_default:
+            args.append("--srt-default=1")
 
     # -- Chapters ----------------------------------------------------------
     chapters = spec.chapters
     if chapters.mode == "none":
-        args.append("--no-chapters")
-    elif chapters.mode == "markers" and chapters.marker_file:
-        args.extend(["--chapters-file", chapters.marker_file])
+        args.append("--no-markers")
+    elif chapters.mode == "markers":
+        args.append("--markers=" + chapters.marker_file if chapters.marker_file else "--markers")
+    elif chapters.mode == "auto":
+        args.append("--markers")
 
+    if overrides is not None:
+        # A preset is the base. Dataclass defaults must not become implicit
+        # overrides of fields the caller never supplied.
+        fields = {
+            "--format": ("container",),
+            "-e": ("video", "encoder"), "-q": ("video", "quality", "quality_type"),
+            "-b": ("video", "bitrate_kbps", "quality_type"),
+            "--encopts": ("video", "quality_type"),
+            "--multi-pass": ("video", "two_pass"), "--turbo": ("video", "turbo"),
+            "--encoder-preset": ("video", "preset"), "--encoder-tune": ("video", "tune"),
+            "--encoder-profile": ("video", "profile"), "--encoder-level": ("video", "level"),
+            "-r": ("video", "framerate"), "--pfr": ("video", "peak_framerate"),
+            "--vfr": ("video", "vfr"), "--cfr": ("video", "cfr"),
+            "-w": ("dimensions", "width"), "-l": ("dimensions", "height"),
+            "--crop": ("dimensions", "crop_mode"), "--crop-mode": ("dimensions", "crop_mode"),
+            "--auto-anamorphic": ("dimensions", "anamorphic"), "--non-anamorphic": ("dimensions", "anamorphic"),
+            "--loose-anamorphic": ("dimensions", "anamorphic"), "--modulus": ("dimensions", "modulus"),
+            "--audio": ("audio", "tracks"), "-E": ("audio", "tracks"),
+            "-6": ("audio", "tracks"), "-B": ("audio", "tracks"), "--arate": ("audio", "tracks"),
+            "--gain": ("audio", "tracks"), "--drc": ("audio", "tracks"),
+            "--aname": ("audio", "tracks"),
+            "--audio-fallback": ("audio", "fallback_encoder"), "--audio-copy-mask": ("audio", "copy_mask"),
+            "--subtitle": ("subtitles", "behavior", "tracks"),
+            "--subtitle-burned": ("subtitles", "behavior", "burn_track", "srt_burn"),
+            "--subtitle-default": ("subtitles", "behavior", "default_track", "srt_default"),
+            "--subtitle-forced": ("subtitles", "forced_only"),
+            "--srt-file": ("subtitles", "srt_file"), "--srt-codeset": ("subtitles", "srt_file", "srt_codeset"),
+            "--srt-lang": ("subtitles", "srt_file", "srt_language"), "--srt-offset": ("subtitles", "srt_file", "srt_offset_ms"),
+            "--srt-burn": ("subtitles", "srt_burn"), "--srt-default": ("subtitles", "srt_default"),
+            "--markers": ("chapters", "mode", "marker_file"), "--no-markers": ("chapters", "mode"),
+        }
+        for key in ("deinterlace", "denoise", "detelecine", "deblock", "rotate", "grayscale", "hflip",
+                    "chroma_smooth", "lapsharp", "unsharp", "color_matrix", "color_range", "color_primaries", "color_transfer"):
+            fields["--" + key.replace("_", "-")] = ("filters", key, key + "_custom")
+        fields.update({
+            "--rotate": ("filters", "rotate", "hflip"),
+            "--deinterlace": ("filters", "deinterlace", "deinterlace_custom"),
+            "--no-comb-detect": ("filters", "deinterlace"), "--no-decomb": ("filters", "deinterlace"),
+            "--no-bwdif": ("filters", "deinterlace"),
+            "--hqdn3d": ("filters", "denoise", "denoise_custom"), "--nlmeans": ("filters", "denoise"),
+            "--no-hqdn3d": ("filters", "denoise"), "--no-nlmeans": ("filters", "denoise"),
+            "--colorspace": ("filters", "color_primaries", "color_transfer"),
+        })
+        filtered = []
+        index = 0
+        switches = {"--multi-pass", "--turbo", "--pfr", "--vfr", "--cfr", "--grayscale",
+                    "--auto-anamorphic", "--non-anamorphic", "--loose-anamorphic",
+                    "--no-comb-detect", "--no-decomb", "--no-bwdif", "--no-hqdn3d", "--no-nlmeans",
+                    "--markers", "--no-markers"}
+        while index < len(args):
+            flag = args[index]
+            end = index + 1
+            if "=" not in flag and flag not in switches and end < len(args):
+                end += 1
+            mapping = fields.get(flag.split("=", 1)[0])
+            include = mapping is None or (mapping[0] in overrides if len(mapping) == 1 else
+                        any(key in (overrides.get(mapping[0]) or {}) for key in mapping[1:]))
+            if include:
+                filtered.extend(args[index:end])
+            index = end
+        args = filtered
+        video_fields = overrides.get("video") or {}
+        for key, flag in (("two_pass", "--no-multi-pass"), ("turbo", "--no-turbo")):
+            if key in video_fields and not getattr(video, key):
+                args.append(flag)
+        filter_fields = overrides.get("filters") or {}
+        disabling = {
+            "deinterlace": ["--no-comb-detect", "--no-deinterlace", "--no-decomb", "--no-bwdif"],
+            "denoise": ["--no-hqdn3d", "--no-nlmeans"], "detelecine": ["--no-detelecine"],
+            "deblock": ["--no-deblock"], "grayscale": ["--no-grayscale"],
+            "chroma_smooth": ["--no-chroma-smooth"], "lapsharp": ["--no-lapsharp"],
+            "unsharp": ["--no-unsharp"],
+        }
+        for key, flags in disabling.items():
+            value = getattr(filters, key)
+            if key in filter_fields and (value == "off" or value is False or value is None):
+                args.extend(flags)
+        if "tune" in video_fields and not video.tune:
+            args.extend(["--encoder-tune", ""])
+        for key in ("profile", "level"):
+            if key in video_fields and not getattr(video, key):
+                args.extend(["--encoder-" + key, "auto"])
+        # Source-rate reset is made in the private snapshot: CLI -r 0 is invalid.
+        # No -r override is needed once VideoFramerate is reset to 'auto'.
+        if "preset" in video_fields and video_fields["preset"] in (None, ""):
+            raise SpecError("explicit encoder preset reset requires a named preset")
+        for key in ("width", "height", "modulus"):
+            if key in (overrides.get("dimensions") or {}) and getattr(dim, key) is None:
+                raise SpecError(f"explicit dimensions.{key} reset requires a numeric value")
+        if any(key in filter_fields and filter_fields[key] in (None, "", "auto") for key in
+               ("color_matrix", "color_primaries", "color_transfer")):
+            raise SpecError("explicit color signalling/conversion reset is not supported")
     return args
 
 
@@ -800,12 +1024,16 @@ def _safe_label(name: str, value: Any) -> str:
 
 
 def _safe_relative_file(name: str, value: Any) -> str:
+    from .pathsafe import PathSafetyError, normalise_relative
+
     text = _safe_label(name, value)
-    if text.startswith("/") or ".." in text.replace("\\", "/").split("/"):
-        raise SpecError(f"{name} must be a relative path without '..'")
-    if "\\" in text:
-        text = text.replace("\\", "/")
-    return text
+    try:
+        relative = normalise_relative(text)
+    except PathSafetyError as exc:
+        raise SpecError(f"{name}: {exc}") from exc
+    if not relative:
+        raise SpecError(f"{name} requires a filename")
+    return relative
 
 
 def _safe_preset_name(value: Any) -> str:
@@ -818,7 +1046,7 @@ def _safe_preset_name(value: Any) -> str:
 
 
 def _custom_filter(name: str, value: Any) -> str:
-    """Validate a HandBrake custom filter string (e.g. ``yadif=1:-1:0``)."""
+    """Validate the syntax of a HandBrake key=value filter string."""
 
     text = str(value).strip()
     if len(text) > 200:

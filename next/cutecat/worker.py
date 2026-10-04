@@ -1,62 +1,56 @@
-"""Background worker: a persistent, cancelable, logged job queue.
-
-One worker thread per configured concurrency slot. Each job:
-
-1. is claimed atomically from SQLite (``queued`` -> ``probing``);
-2. has its input/output paths re-validated against storage roots;
-3. is probed with ``--scan`` (title count / duration captured);
-4. is encoded with the real engine, with ``--json`` progress parsed into the
-   job row and every stderr line appended to the job log;
-5. is finalized (``succeeded`` / ``failed`` / ``canceled``).
-
-Cancellation is cooperative: :meth:`Store.request_cancel` flips a flag that the
-engine watcher observes to signal the process group.
-"""
+"""Persistent queue with isolated output staging and cancelable encoding."""
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import json
+import math
+import os
+import tempfile
 import threading
-import time
 from pathlib import Path
 
 from .config import AppConfig
-from .engine import EngineError, HandBrakeEngine, parse_progress_line
-from .pathsafe import PathSafetyError, resolve_request, assert_writable
-from .spec import TranscodeSpec, build_engine_args
+from .engine import EngineError, HandBrakeEngine
+from .admission import validate_encoders
+from .presets import resolve_job_preset, validate_preset_document
+from .pathsafe import (
+    resolve_request, resolve_spec_files, validate_job_paths,
+)
+from .spec import TranscodeSpec, build_engine_args, prepare_job_preset
 from .store import Store
+from .runtime import RuntimeSettings
 
 
 class Worker:
-    def __init__(self, config: AppConfig, store: Store, engine: HandBrakeEngine):
+    def __init__(self, config: AppConfig, store: Store, engine: HandBrakeEngine, runtime=None):
         self.config = config
         self.store = store
         self.engine = engine
+        self.runtime = runtime or RuntimeSettings(config, store)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
-    # -- lifecycle ---------------------------------------------------------
-
     def start(self) -> None:
-        for index in range(self.config.engine.max_concurrent_jobs):
-            thread = threading.Thread(
-                target=self._loop, name=f"worker-{index}", daemon=True
-            )
+        for index in range(8):
+            thread = threading.Thread(target=self._loop, name=f"worker-{index}", daemon=True)
             thread.start()
             self._threads.append(thread)
 
     def stop(self) -> None:
         self._stop.set()
-
-    # -- main loop ---------------------------------------------------------
+        for thread in self._threads:
+            thread.join()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
             job = None
             try:
-                job = self.store.claim_next_queued()
+                job = self.runtime.claim()
             except Exception as exc:  # pragma: no cover - db failure
                 self.store.add_log("__system__", "error", f"claim failed: {exc}")
-                time.sleep(2)
+                self._stop.wait(2)
                 continue
             if job is None:
                 self._stop.wait(1.0)
@@ -66,142 +60,189 @@ class Worker:
             except Exception as exc:  # pragma: no cover - defensive
                 self.store.add_log(job.id, "error", f"worker crashed: {exc}")
                 self.store.set_status(job.id, "failed", error=str(exc))
+            finally:
+                self.runtime.release()
 
-    # -- single job --------------------------------------------------------
+    def _check_cancel(self, job_id: str) -> None:
+        if self._stop.is_set() or self.store.cancel_requested(job_id):
+            raise EngineError("__canceled__")
+        while self.store.pause_requested(job_id):
+            self.store.acknowledge_pause(job_id, True)
+            if self._stop.wait(0.1) or self.store.cancel_requested(job_id):
+                raise EngineError("__canceled__")
+        self.store.acknowledge_pause(job_id, False)
 
     def _run_job(self, job_id: str) -> None:
         job = self.store.get_job(job_id)
-        if job is None:
+        if job is None or job.status in ("waiting", "succeeded", "failed", "canceled", "interrupted") or (job.status == "paused" and not job.execution_active):
             return
-
         self.store.add_log(job_id, "info", "job claimed")
-
-        # 1. Re-validate paths (defence in depth: they were checked at submit).
+        timeout = self.runtime.read()["job_timeout_seconds"]
         try:
-            input_path = resolve_request(
-                list(self.config.storage_roots), job.input_root, job.input_path,
-                require_exists=True,
-            )
-            if not input_path.is_file:
-                raise PathSafetyError("input is not a file")
-            output_path = resolve_request(
-                list(self.config.storage_roots), job.output_root, job.output_path,
-            )
-            assert_writable(output_path)
-        except PathSafetyError as exc:
-            self.store.add_log(job_id, "error", f"path rejected: {exc}")
-            self.store.set_status(job_id, "failed", error=f"path rejected: {exc}")
-            return
+            roots = list(self.config.storage_roots)
+            input_path = resolve_request(roots, job.input_root, job.input_path, require_exists=True)
+            output_path = resolve_request(roots, job.output_root, job.output_path)
+            validate_job_paths(input_path, output_path)
+            spec = TranscodeSpec.from_dict(job.spec)
+            files = resolve_spec_files(spec, roots, job.input_root)
+            execution = job.execution
+            if execution is None:
+                # Legacy jobs never had an immutable snapshot. Resolve explicitly,
+                # rather than silently treating an imported name as an official one.
+                _, _, document = resolve_job_preset(self.store, self.engine, job.preset_id, job.preset_name or spec.preset)
+                overrides = job.spec
+            else:
+                document = execution.get("preset")
+                overrides = execution.get("overrides") or {}
+            if document:
+                validate_preset_document(document)
+            document = prepare_job_preset(document, overrides)
+            args = build_engine_args(spec, overrides=overrides if document else None, preset=document)
+            for flag, absolute in files.items():
+                if flag == "--markers":
+                    index = next(i for i, arg in enumerate(args) if arg.startswith("--markers="))
+                    args[index] = "--markers=" + absolute
+                else:
+                    args[args.index(flag) + 1] = absolute
+            self._check_cancel(job_id)
 
-        if self.config.engine.refuse_overwrite and output_path.absolute.exists():
-            self.store.add_log(job_id, "error", "output already exists")
-            self.store.set_status(job_id, "failed", error="output already exists")
-            return
-
-        output_path.absolute.parent.mkdir(parents=True, exist_ok=True)
-
-        spec = TranscodeSpec.from_dict(job.spec)
-        args = build_engine_args(spec)
-
-        # 2. Probe (scan) — captures title count / duration. Non-fatal.
-        try:
-            self.store.add_log(job_id, "info", "scanning source")
-            scan = self.engine.scan(str(input_path.absolute))
-            titles = scan.get("titles") or []
-            duration = _first_duration(scan)
-            self.store.update_job(
-                job_id,
-                title_count=len(titles),
-                duration_seconds=duration,
-            )
-            self.store.add_log(
-                job_id, "info",
-                f"scan complete: {len(titles)} title(s)"
-                + (f", duration {duration:.1f}s" if duration else ""),
-            )
-        except EngineError as exc:
-            self.store.add_log(job_id, "warn", f"scan unavailable: {exc}")
-        except Exception as exc:  # pragma: no cover
-            self.store.add_log(job_id, "warn", f"scan failed: {exc}")
-
-        if self.store.cancel_requested(job_id):
-            self.store.set_status(job_id, "canceled", error="canceled before encode")
-            self.store.add_log(job_id, "info", "canceled before encode")
-            return
-
-        # 3. Encode.
-        self.store.set_status(job_id, "running")
-        self.store.update_job(job_id, args_json=__import__("json").dumps(args))
-        self.store.add_log(
-            job_id, "info",
-            "encoding: " + " ".join(self.engine.build_encode_command(
-                input_path=str(input_path.absolute),
-                output_path=str(output_path.absolute),
-                args=args,
-            )),
-        )
-
-        def on_event(event: dict) -> None:
-            progress = event.get("progress")
-            if progress is not None:
-                self.store.update_job(
-                    job_id,
-                    progress=max(0.0, min(1.0, float(progress) / 100.0)),
-                    speed=str(event.get("rate")) if event.get("rate") is not None else None,
-                    eta_seconds=event.get("eta_seconds"),
-                )
-
-        try:
-            self.engine.run_encode(
-                input_path=str(input_path.absolute),
-                output_path=str(output_path.absolute),
-                args=args,
-                on_event=on_event,
-                should_cancel=lambda: self.store.cancel_requested(job_id),
-                timeout=self.config.engine.job_timeout_seconds,
-            )
-        except EngineError as exc:
+            # Locks live beside the local database, not on an SMB/NFS share.
+            # Keep lock files: unlinking one would let waiters lock different inodes.
+            lock_dir = Path(self.store.path).resolve().parent / "output-locks"
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            key = hashlib.sha256(os.fsencode(output_path.absolute)).hexdigest()
+            with (lock_dir / key).open("a") as lock:
+                while True:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        self._check_cancel(job_id)
+                        self._stop.wait(0.1)
+                try:
+                    self._check_cancel(job_id)
+                    if self.config.engine.refuse_overwrite and output_path.exists:
+                        raise EngineError("output already exists")
+                    output_path.absolute.parent.mkdir(parents=True, exist_ok=True)
+                    # Recheck after mkdir; a changed symlink must not move the staging area.
+                    current = resolve_request(roots, job.output_root, job.output_path)
+                    validate_job_paths(input_path, current)
+                    if current.absolute != output_path.absolute:
+                        raise EngineError("output path changed")
+                    with tempfile.TemporaryDirectory(
+                        prefix=f".cute-cat-{job.id}-", dir=output_path.absolute.parent,
+                    ) as staging:
+                        partial = Path(staging) / output_path.absolute.name
+                        # Re-probe after waiting for the output lock: queued tasks
+                        # must not reuse submission-time hardware readiness.
+                        validate_encoders(spec, self.engine.probe(refresh=True), preset=document, overrides=overrides)
+                        self._check_cancel(job_id)
+                        with tempfile.TemporaryDirectory(prefix="cute-cat-job-preset-") as preset_dir:
+                            if document:
+                                snapshot = Path(preset_dir) / "job.json"
+                                snapshot.write_text(json.dumps(document), encoding="utf-8")
+                                if "--preset" not in args:
+                                    args[:0] = ["--preset", "__cute_cat_job__"]
+                                index = args.index("--preset")
+                                args[index + 1] = "__cute_cat_job__"
+                                args[index:index] = ["--preset-import-file", str(snapshot)]
+                            self._encode_job(job, input_path.absolute, partial, args, timeout)
+                        self._check_cancel(job_id)
+                        self.store.set_status(job_id, "finalizing")
+                        self.store.add_log(job_id, "info", "validating staged output")
+                        if not partial.is_file() or partial.stat().st_size == 0:
+                            raise EngineError("output validation failed: empty or missing file")
+                        scan = self.engine.scan(str(partial))
+                        duration = _first_duration(scan)
+                        if not scan.get("titles") or duration is None or duration <= 0:
+                            raise EngineError("output validation failed: no playable title with positive duration")
+                        self._check_cancel(job_id)
+                        current = resolve_request(roots, job.output_root, job.output_path)
+                        source = resolve_request(roots, job.input_root, job.input_path, require_exists=True)
+                        validate_job_paths(source, current)
+                        if current.absolute != output_path.absolute:
+                            raise EngineError("output path changed before publication")
+                        # Publication and terminal status share the cancellation lock.
+                        while True:
+                            self._check_cancel(job_id)
+                            current = resolve_request(roots, job.output_root, job.output_path)
+                            source = resolve_request(roots, job.input_root, job.input_path, require_exists=True)
+                            validate_job_paths(source, current)
+                            if current.absolute != output_path.absolute:
+                                raise EngineError("output path changed before publication")
+                            if self.store.complete_job(job_id, lambda: self._publish(partial, current.absolute)):
+                                break
+                        self.store.add_log(job_id, "info", "encode finished")
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+        except Exception as exc:
             message = str(exc)
             if message == "__canceled__":
-                self.store.set_status(job_id, "canceled", error="canceled by user")
+                self.store.set_status(job_id, "canceled", error="canceled before publication")
                 self.store.add_log(job_id, "info", "encode canceled")
             else:
                 self.store.set_status(job_id, "failed", error=message)
                 self.store.add_log(job_id, "error", message)
-            _cleanup_partial(output_path.absolute)
-            return
-        except Exception as exc:  # pragma: no cover
-            self.store.set_status(job_id, "failed", error=str(exc))
-            self.store.add_log(job_id, "error", str(exc))
-            _cleanup_partial(output_path.absolute)
-            return
+        finally:
+            self.store.finish_execution(job_id)
 
-        self.store.set_status(job_id, "succeeded")
-        self.store.add_log(job_id, "info", "encode finished")
+    def _publish(self, partial: Path, output: Path) -> None:
+        if self.config.engine.refuse_overwrite:
+            # link is atomic and fails if *any* entry appeared at the destination.
+            # Fail closed on filesystems without hard links; never fall back to rename.
+            os.link(partial, output)
+        else:
+            os.replace(partial, output)
+
+    def _encode_job(self, job, input_path: Path, partial: Path, args: list[str], timeout: int) -> None:
+        self.store.set_status(job.id, "probing")
+        try:
+            scan = self.engine.scan(str(input_path))
+            self.store.update_job(
+                job.id, title_count=len(scan.get("titles") or []), duration_seconds=_first_duration(scan),
+            )
+            self.store.add_log(job.id, "info", "source scan complete")
+        except EngineError as exc:
+            self.store.add_log(job.id, "warn", f"scan unavailable: {exc}")
+        self._check_cancel(job.id)
+        self.store.set_status(job.id, "running")
+        self._check_cancel(job.id)
+        self.store.update_job(job.id, args_json=json.dumps(args))
+        self.store.add_log(job.id, "info", "encoding: " + " ".join(self.engine.build_encode_command(
+            input_path=str(input_path), output_path=str(partial), args=args,
+        )))
+
+        def on_event(event: dict) -> None:
+            if event.get("progress") is not None:
+                self.store.update_job(
+                    job.id, progress=max(0.0, min(0.99, float(event["progress"]) / 100.0)),
+                    speed=str(event["rate"]) if event.get("rate") is not None else None,
+                    eta_seconds=event.get("eta_seconds"),
+                )
+
+        self.engine.run_encode(
+            input_path=str(input_path), output_path=str(partial), args=args,
+            on_event=on_event,
+            should_cancel=lambda: self._stop.is_set() or self.store.cancel_requested(job.id),
+            timeout=timeout,
+            should_pause=lambda: self.store.pause_requested(job.id),
+            on_pause=lambda paused: self.store.acknowledge_pause(job.id, paused),
+        )
 
 
 def _first_duration(scan: dict) -> float | None:
-    titles = scan.get("titles") or []
-    for title in titles:
-        if isinstance(title, dict) and "Duration" in title:
-            try:
-                value = title["Duration"]
-                # HandBrake reports duration as {"Hours":..,"Minutes":..,"Seconds":..}
-                if isinstance(value, dict):
-                    return (
-                        int(value.get("Hours", 0)) * 3600
-                        + int(value.get("Minutes", 0)) * 60
-                        + int(value.get("Seconds", 0))
-                    )
-                return float(value)
-            except (TypeError, ValueError):
-                continue
+    for title in scan.get("titles") or []:
+        if not isinstance(title, dict) or "Duration" not in title:
+            continue
+        try:
+            value = title["Duration"]
+            if isinstance(value, dict):
+                duration = (int(value.get("Hours", 0)) * 3600
+                            + int(value.get("Minutes", 0)) * 60 + float(value.get("Seconds", 0)))
+            else:
+                duration = float(value)
+            if math.isfinite(duration):
+                return duration
+        except (TypeError, ValueError):
+            continue
     return None
-
-
-def _cleanup_partial(path: Path) -> None:
-    try:
-        if path.exists():
-            path.unlink()
-    except OSError:  # pragma: no cover
-        pass

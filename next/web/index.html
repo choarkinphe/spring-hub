@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cute Cat · HandBrake 工作台</title>
-  <link rel="stylesheet" href="/assets/styles.css" />
+  <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <header class="topbar">
@@ -15,22 +15,116 @@
         <p class="subtitle">HandBrake 转码工作台</p>
       </div>
     </div>
-    <div class="status-cluster">
+    <div class="status-cluster"><button id="btn-open-settings" class="btn btn-small" type="button" aria-haspopup="dialog" aria-controls="settings-drawer">系统设置</button>
       <span id="engine-status" class="pill pill-unknown" title="HandBrakeCLI 状态">引擎检测中…</span>
-      <span id="queue-status" class="pill pill-idle">队列空闲</span>
+      <span id="queue-status" class="pill pill-unknown">队列读取中…</span>
     </div>
   </header>
 
   <div id="engine-banner" class="banner banner-warn hidden" role="alert"></div>
 
-  <nav class="workspace-nav" aria-label="主导航">
-    <button type="button" class="workspace-link active" data-workspace="encode" aria-current="page">编码设置</button>
-    <button type="button" class="workspace-link" data-workspace="files">文件浏览</button>
-    <button type="button" class="workspace-link" data-workspace="queue">任务队列</button>
-  </nav>
   <main class="layout">
-    <section class="col workspace-page" data-page="files" hidden aria-label="文件浏览">
-      <div class="page-heading"><h2>文件浏览</h2><p>选择已挂载目录中的媒体文件，随后设置转码参数。</p></div>
+    <div class="page-heading"><div><h2>系统状态与任务队列</h2><p>查看转码进度与运行状态，创建任务时再选择文件和编码设置。</p></div><button id="btn-create-task" class="btn btn-primary" type="button" aria-haspopup="dialog" aria-controls="create-task-dialog" disabled>创建任务</button></div>
+    <section class="panel system-overview" aria-labelledby="system-title">
+      <div class="panel-heading"><h2 id="system-title">系统概览</h2><button id="btn-open-system" class="btn btn-small" type="button" aria-haspopup="dialog" aria-controls="system-drawer">系统详情</button></div>
+      <dl id="system-summary" class="system-summary">
+        <div><dt>CPU</dt><dd>读取中…</dd></div><div><dt>内存</dt><dd>读取中…</dd></div>
+        <div><dt>GPU</dt><dd>读取中…</dd></div><div><dt>可用空间（最少）</dt><dd>读取中…</dd></div>
+      </dl>
+      <p id="summary-message" class="hint" role="status">正在读取状态…</p>
+    </section>
+    <section class="col queue-workspace" aria-labelledby="queue-title">
+      <div class="page-heading"><div><h2 id="queue-title">任务队列 <span id="queue-count" class="badge">—</span></h2><p>管理转换任务，查看输出与进度。</p></div><button id="btn-refresh-jobs" class="btn btn-small" type="button">刷新队列</button></div>
+      <p id="queue-summary" class="hint">正在读取任务统计…</p>
+      <p id="queue-message" class="hint" role="status"></p>
+      <section class="panel queue-list-panel" aria-label="最近任务">
+        <div class="queue-toolbar">
+          <div class="queue-batch-actions" role="group" aria-label="所选任务操作">
+            <button id="btn-batch-start" class="btn btn-small" type="button" disabled>▶ 启动 / 继续</button>
+            <button id="btn-batch-pause" class="btn btn-small" type="button" disabled>Ⅱ 暂停</button>
+            <button id="btn-batch-cancel" class="btn btn-small" type="button" disabled>取消任务</button>
+            <button id="btn-batch-delete" class="btn btn-small btn-danger" type="button" disabled>删除记录</button>
+          </div>
+          <span id="queue-selection-note" class="hint">勾选任务后可批量操作</span>
+        </div>
+        <div class="queue-filter-row">
+          <div id="queue-filters" class="queue-filters" role="group" aria-label="筛选最近任务"></div>
+          <label class="queue-search"><span class="sr-only">搜索最近任务的文件名、路径或预设</span><input id="queue-search" type="search" placeholder="搜索文件、路径或预设" /></label>
+        </div>
+        <div class="queue-list-meta"><label class="queue-select-all"><input id="queue-select-all" type="checkbox" disabled /> 全选当前结果</label><p id="job-list-note" class="hint"></p></div>
+        <div id="queue-empty" class="queue-empty" hidden><span class="queue-empty-icon" aria-hidden="true">▤</span><h3 id="queue-empty-title">还没有转换任务</h3><p id="queue-empty-description">点击“创建任务”，选择源文件并加入队列。</p><button id="btn-clear-queue-filters" class="btn btn-small" type="button" hidden>清除筛选</button></div>
+        <div class="job-list-heading" aria-hidden="true"><span></span><span>源文件 / 输出位置</span><span>转换格式 / 预设</span><span>状态 / 进度</span><span>操作</span></div>
+        <ul id="job-list" class="job-list" aria-label="转换任务"></ul>
+      </section>
+    </section>
+  </main>
+  <footer class="footer"><span>功能矩阵见 <a href="#" id="link-matrix">能力报告</a>。</span><span id="version-tag"></span></footer>
+
+  <dialog id="settings-drawer" class="preset-drawer" aria-labelledby="settings-title">
+    <header class="preset-drawer-header"><h2 id="settings-title">系统设置</h2><button id="btn-close-settings" class="btn" type="button">关闭</button></header>
+    <div class="preset-results">
+      <section class="system-section"><h3>任务调度</h3>
+        <label class="field"><span>并发任务数（1–8）</span><input id="setting-concurrency" type="number" min="1" max="8" step="1" /></label>
+        <label class="check"><input id="setting-auto-start" type="checkbox" /> 新任务自动启动</label>
+        <label class="field"><span>编码超时秒数（0 不限）</span><input id="setting-timeout" type="number" min="0" max="86400" step="1" /></label>
+        <p class="hint">降低并发不会中断正在执行的任务；暂停进程仍占并发名额。恢复原地继续，服务重启后需重新编码。</p>
+      </section>
+      <section class="system-section"><h3>输出默认值</h3>
+        <label class="field"><span>默认输出存储根</span><select id="setting-output-root"></select></label>
+        <label class="field"><span>输出命名模板</span><input id="setting-name-template" type="text" maxlength="240" /></label>
+        <p class="hint">允许 {source}、{encoder}、{preset}、{ext}；例如 converted/{source}-{encoder}.{ext}。相对路径，不自动覆盖同名输出。</p>
+        <button id="btn-name-preview" class="btn btn-small" type="button">预览命名</button><p id="name-preview" class="hint"></p>
+      </section>
+      <section class="system-section"><div class="panel-heading"><h3>编码任务模板</h3><button id="btn-new-template" class="btn btn-small" type="button">新建模板</button></div>
+        <label class="field"><span>默认任务模板</span><select id="setting-default-template"></select></label>
+        <div id="settings-template-list"></div>
+      </section>
+      <p id="settings-message" class="hint" role="status"></p>
+    </div>
+    <footer class="dialog-actions"><button id="btn-save-settings" class="btn btn-primary" type="button">保存设置</button><p class="hint">保存在当前服务数据库中；不会重写部署文件。</p></footer>
+  </dialog>
+
+  <dialog id="system-drawer" class="preset-drawer system-drawer" aria-labelledby="system-drawer-title">
+    <header class="preset-drawer-header"><div><h2 id="system-drawer-title">系统详情</h2><p>设备、存储与编解码器检测信息</p></div><button id="btn-close-system" class="btn" type="button">关闭</button></header>
+    <div class="preset-results">
+      <section class="system-section" aria-labelledby="resources-title">
+        <div class="panel-heading"><h3 id="resources-title">资源</h3><button id="btn-refresh-system" class="btn btn-small" type="button">刷新状态</button></div>
+        <dl id="system-info" class="system-info"></dl>
+        <dl id="resource-info" class="system-info resource-info"></dl>
+        <details class="status-explanation"><summary>数据来源与采样说明</summary><p id="system-message" class="hint" role="status">正在读取系统状态…</p><p id="resource-message" class="hint" role="status">资源读取中…</p></details>
+      </section>
+      <section class="system-section" aria-labelledby="storage-title">
+        <h3 id="storage-title">存储</h3><div id="disk-status"></div><div id="storage-status" class="storage-status"></div>
+      </section>
+      <section class="system-section" aria-labelledby="codecs-title">
+        <h3 id="codecs-title">编解码器</h3>
+        <p class="hint">引擎提供情况与运行可用性分开报告。</p>
+        <button id="btn-refresh-codecs" class="btn btn-small" type="button">重新检测编解码器</button>
+        <p id="codec-message" class="hint" role="status"></p>
+        <details class="codec-report"><summary>查看完整检测清单</summary><div id="codec-status"></div></details>
+      </section>
+    </div>
+  </dialog>
+
+  <dialog id="job-drawer" class="preset-drawer job-drawer" aria-labelledby="job-drawer-title">
+    <header class="preset-drawer-header"><h2 id="job-drawer-title">任务详情</h2><button id="btn-close-job" class="btn" type="button">关闭</button></header>
+    <section class="preset-results">
+      <p id="detail-message" class="hint" role="status"></p>
+      <div class="job-hero"><strong id="detail-source">—</strong><span id="detail-status" class="status-tag">—</span></div>
+      <div class="progress-wrap"><div class="progress"><div id="progress-bar" class="progress-bar"></div></div><strong id="progress-label">—</strong></div>
+      <div id="detail-actions" class="actions"></div>
+      <p id="detail-error" class="banner banner-error" hidden></p>
+      <div id="job-detail" class="job-detail"></div>
+      <details class="detail-section"><summary>任务日志</summary><pre id="job-log" class="log">—</pre></details>
+      <details class="detail-section"><summary>完整参数与命令</summary><pre id="detail-spec" class="log">—</pre></details>
+      <button id="btn-cancel" hidden type="button" disabled>取消任务</button>
+    </section>
+  </dialog>
+
+  <dialog id="file-picker-dialog" class="task-dialog file-picker" aria-labelledby="file-picker-title">
+    <header class="dialog-heading"><div><h2 id="file-picker-title">选择源文件</h2><p>浏览已配置的存储根，选择文件后返回任务设置。</p></div><button id="btn-close-files" class="btn" type="button">返回</button></header>
+    <section class="dialog-body col" aria-label="文件浏览">
+      <p id="browser-message" class="hint" role="status"></p>
       <section class="panel">
         <h2>源文件</h2>
         <label class="field">
@@ -44,11 +138,14 @@
         <button id="btn-up" class="btn btn-ghost" type="button">↑ 上级目录</button>
       </section>
     </section>
+  </dialog>
 
-    <section class="col workspace-page" data-page="encode" aria-label="编码设置">
-      <div class="page-heading"><div><h2>编码设置</h2><p>选择源文件后，按分类调整输出设置。</p></div><button class="btn" type="button" data-open-workspace="files">选择源文件</button></div>
+  <dialog id="create-task-dialog" class="preset-drawer create-drawer" aria-labelledby="create-task-title">
+    <header class="dialog-heading"><div><h2 id="create-task-title">创建任务</h2><p>选择源文件和输出位置，按需调整编码设置。</p></div><button id="btn-close-create" class="btn" type="button">关闭</button></header>
+    <section class="dialog-body col" data-page="encode" aria-label="编码设置">
+      <div class="panel-heading"><h3>源文件</h3><button id="btn-select-file" class="btn" type="button" aria-haspopup="dialog" aria-controls="file-picker-dialog">选择文件</button></div>
       <div class="source-summary" id="source-summary">
-        <div class="placeholder">从左侧选择一个媒体文件，或点击“扫描”查看标题信息。</div>
+        <div class="placeholder">尚未选择源文件。点击“选择文件”；也可先调整参数并预校验。</div>
       </div>
 
       <nav class="tabs" role="tablist" aria-label="HandBrake 设置">
@@ -65,6 +162,9 @@
         <!-- Summary -->
         <div class="tab-panel active" data-panel="summary">
           <h3>摘要</h3>
+          <label class="field"><span>编码任务模板</span><select id="task-template-select"></select></label>
+          <div class="grid-2"><label class="field"><span>模板名称</span><input id="template-name" type="text" maxlength="80" placeholder="例如：日常压缩" /></label><label class="field"><span>模板说明</span><input id="template-description" type="text" maxlength="500" /></label></div>
+          <button id="btn-save-template" class="btn btn-small" type="button">保存当前编码为模板</button><p id="template-message" class="hint" role="status"></p>
           <div class="preset-summary">
             <div>
               <span class="preset-eyebrow" id="preset-current-source">自定义</span>
@@ -91,8 +191,8 @@
         <div class="tab-panel" data-panel="dimensions">
           <h3>尺寸</h3>
           <div class="grid-2">
-            <label class="field"><span>宽度 (-w)</span><input id="dim-width" type="number" min="0" placeholder="auto" /></label>
-            <label class="field"><span>高度 (-l)</span><input id="dim-height" type="number" min="0" placeholder="auto" /></label>
+            <label class="field"><span>宽度 (-w)</span><input id="dim-width" type="number" min="16" max="8192" step="1" placeholder="auto" /></label>
+            <label class="field"><span>高度 (-l)</span><input id="dim-height" type="number" min="16" max="8192" step="1" placeholder="auto" /></label>
           </div>
           <label class="field"><span>裁剪模式</span>
             <select id="dim-crop-mode">
@@ -102,16 +202,15 @@
             </select>
           </label>
           <div class="grid-4">
-            <label class="field"><span>上</span><input id="crop-top" type="number" min="0" /></label>
-            <label class="field"><span>下</span><input id="crop-bottom" type="number" min="0" /></label>
-            <label class="field"><span>左</span><input id="crop-left" type="number" min="0" /></label>
-            <label class="field"><span>右</span><input id="crop-right" type="number" min="0" /></label>
+            <label class="field"><span>上</span><input id="crop-top" type="number" min="0" max="4096" step="1" /></label>
+            <label class="field"><span>下</span><input id="crop-bottom" type="number" min="0" max="4096" step="1" /></label>
+            <label class="field"><span>左</span><input id="crop-left" type="number" min="0" max="4096" step="1" /></label>
+            <label class="field"><span>右</span><input id="crop-right" type="number" min="0" max="4096" step="1" /></label>
           </div>
           <label class="field"><span>变形 (Anamorphic)</span>
             <select id="dim-anamorphic">
               <option value="auto">自动</option>
               <option value="none">关闭</option>
-              <option value="strict">严格</option>
               <option value="loose">宽松</option>
             </select>
           </label>
@@ -133,9 +232,8 @@
           <label class="field"><span>去隔行 (Deinterlace)</span>
             <select id="flt-deinterlace">
               <option value="off">关闭</option>
-              <option value="fast">快速</option>
-              <option value="slow">慢速</option>
-              <option value="slower">更慢</option>
+              <option value="skip-spatial">Yadif（跳过空间检查）</option>
+              <option value="default">Yadif（默认）</option>
               <option value="bob">Bob（双倍帧率）</option>
             </select>
           </label>
@@ -180,8 +278,10 @@
           </label>
           <div class="grid-2">
             <label class="field"><span>质量 / RF (-q)</span><input id="video-quality" type="number" step="0.5" min="0" max="63" value="22" /></label>
-            <label class="field"><span>码率 kbps (-b)</span><input id="video-bitrate" type="number" min="1" placeholder="auto" /></label>
+            <label class="field"><span>码率 kbps (-b)</span><input id="video-bitrate" type="number" min="1" max="500000" step="1" placeholder="码率模式必填" /></label>
           </div>
+          <p class="hint">两遍仅用于码率模式，Turbo 仅用于两遍。无损仅支持 x264/x265 编码器模式，不保证源像素全流程无损。</p>
+          <p class="hint">预设、Tune、Profile、Level 为协议选项，并非逐编码器能力探测；预校验不证明所有组合可编码。任务预设未修改的控件不会覆盖继承值。</p>
           <div class="grid-2">
             <label class="field"><span>编码器预设</span><select id="video-preset"></select></label>
             <label class="field"><span>Tune</span><select id="video-tune"></select></label>
@@ -207,15 +307,20 @@
         <!-- Subtitles -->
         <div class="tab-panel" data-panel="subtitles">
           <h3>字幕</h3>
+          <p class="hint">当前界面选择首条源字幕或外语搜索；所选列表序号为 1。源字幕与外挂 SRT 最多各占同一个烧录/默认位置，不能双重指定。预校验不检查源轨是否存在。</p>
           <label class="field"><span>行为 (--subtitle)</span>
             <select id="sub-behavior"></select>
           </label>
-          <label class="field"><span>烧录字幕轨</span><input id="sub-burn" type="number" min="1" placeholder="无" /></label>
-          <label class="field"><span>默认字幕轨</span><input id="sub-default" type="number" min="1" placeholder="无" /></label>
+          <label class="field"><span>源字幕烧录序号（所选列表，从 1 起）</span><input id="sub-burn" type="number" min="1" placeholder="无" /></label>
+          <label class="field"><span>源字幕默认序号（所选列表，从 1 起）</span><input id="sub-default" type="number" min="1" placeholder="无" /></label>
           <label class="check"><input id="sub-forced" type="checkbox" /> 仅强制字幕</label>
           <label class="field"><span>外挂字幕文件（相对路径，可选）</span>
-            <input id="sub-srt" type="text" placeholder="subs/movie.srt" />
+            <input id="sub-srt" type="text" placeholder="subs/movie.srt（默认 UTF-8）" />
           </label>
+          <div class="grid-2">
+            <label class="check"><input id="sub-srt-burn" type="checkbox" /> 烧录外挂 SRT</label>
+            <label class="check"><input id="sub-srt-default" type="checkbox" /> 外挂 SRT 为默认字幕</label>
+          </div>
         </div>
 
         <!-- Chapters -->
@@ -228,50 +333,28 @@
               <option value="markers">从标记文件创建</option>
             </select>
           </label>
-          <label class="field"><span>章节标记文件（相对路径）</span>
-            <input id="chap-file" type="text" placeholder="chapters/movie.txt" />
+          <label class="field"><span>章节标记 CSV（相对于输入存储根）</span>
+            <input id="chap-file" type="text" placeholder="chapters/movie.csv" />
           </label>
         </div>
       </div>
 
+      <section id="spec-validation" class="validation-result" hidden aria-label="参数预校验结果">
+        <strong id="validation-message" role="status" aria-live="polite"></strong>
+        <p class="hint">仅校验参数结构、预设解析和 CLI 映射；不检查路径/附属文件是否存在、源轨、硬件准入或实际编码。不创建任务。加入队列仍会完整复验。</p>
+        <details id="validation-details" hidden><summary>查看提交参数与 CLI 参数数组</summary><pre id="validation-json"></pre></details>
+      </section>
+    </section>
+    <footer class="dialog-actions">
+      <p id="create-message" class="hint" role="status"></p>
       <div class="actions">
+        <button id="btn-validate" class="btn" type="button" disabled>预校验参数</button>
         <button id="btn-scan" class="btn" type="button">扫描源文件</button>
         <button id="btn-preview" class="btn" type="button" disabled title="预览渲染未实现（见功能矩阵）">预览</button>
         <button id="btn-queue" class="btn btn-primary" type="button" disabled>加入队列</button>
       </div>
-    </section>
-
-    <section class="col workspace-page" data-page="queue" hidden aria-label="任务队列">
-      <div class="page-heading"><div><h2>任务队列 <span id="queue-count" class="badge">0</span></h2><p>选择任务查看进度、错误信息与完整日志。</p></div><button class="btn" type="button" data-open-workspace="encode">返回编码设置</button></div>
-      <div class="queue-layout">
-      <section class="panel queue-list-panel">
-        <h2>全部任务</h2>
-        <ul id="job-list" class="job-list"></ul>
-      </section>
-      <section class="panel">
-        <h2>任务详情</h2>
-        <div id="job-detail" class="job-detail">
-          <p class="hint">选择队列中的任务查看进度与日志。</p>
-        </div>
-        <div class="progress-wrap">
-          <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
-          <span id="progress-label" class="hint">—</span>
-        </div>
-        <div class="actions actions-tight">
-          <button id="btn-cancel" class="btn btn-danger" type="button" disabled>取消任务</button>
-        </div>
-      </section>
-      <section class="panel queue-log-panel">
-        <pre id="job-log" class="log">—</pre>
-      </section>
-      </div>
-    </section>
-  </main>
-
-  <footer class="footer">
-    <span>功能矩阵见 <a href="#" id="link-matrix">能力报告</a>。</span>
-    <span id="version-tag"></span>
-  </footer>
+    </footer>
+  </dialog>
 
   <dialog id="preset-drawer" class="preset-drawer" aria-labelledby="preset-drawer-title" aria-describedby="preset-drawer-help">
     <header class="preset-drawer-header">
@@ -318,6 +401,6 @@
     <button class="btn" id="btn-close-matrix" type="button">关闭</button>
   </dialog>
 
-  <script src="/assets/app.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>

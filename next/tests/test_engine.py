@@ -256,6 +256,15 @@ class InstantiationProbeTests(unittest.TestCase):
             self.engine.probe(refresh=True)
             self.assertGreater(spy.call_count, calls)          # refresh really re-probes
 
+    def test_decoder_diagnostics_distinguish_compile_and_runtime(self):
+        result = HandBrakeEngine._parse_decoder_backends(
+            "[12:00:00] nvdec: is not compiled into this build\n"
+            "qsv: not available on this system\nvideotoolbox: is available\n")
+        self.assertEqual(result["nvdec"]["status"], "not_compiled")
+        self.assertEqual(result["qsv"]["status"], "unavailable")
+        self.assertEqual(result["videotoolbox"]["status"], "reported")
+        self.assertEqual(HandBrakeEngine._parse_decoder_backends("--enable-hw-decoding nvdec"), {})
+
     def test_missing_binary_never_probes(self):
         engine = HandBrakeEngine(EngineConfig(handbrake_bin="/nonexistent/HandBrakeCLI"))
         with patch.object(engine, "_instantiate_encoder") as spy:

@@ -21,10 +21,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 JOB_STATUSES = {
-    "queued", "probing", "running", "finalizing",
+    "waiting", "paused", "queued", "probing", "running", "finalizing",
     "succeeded", "failed", "canceled", "interrupted",
 }
 ACTIVE_STATUSES = {"probing", "running", "finalizing"}
@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS presets (
     UNIQUE(source, name, file)
 );
 
+CREATE TABLE IF NOT EXISTS task_templates (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+    payload_json TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -99,6 +104,10 @@ class Job:
     status: str
     spec: dict
     args: list[str] = field(default_factory=list)
+    execution: dict | None = None
+    execution_active: bool = False
+    pause_requested: bool = False
+    paused_from: str | None = None
     preset_name: str | None = None
     container: str | None = None
     progress: float = 0.0
@@ -111,6 +120,21 @@ class Job:
     started_at: str | None = None
     finished_at: str | None = None
 
+    def actions(self) -> list[str]:
+        active = self.execution_active or self.status in ACTIVE_STATUSES or (self.status == "paused" and self.paused_from in ACTIVE_STATUSES)
+        if self.error == "cancel requested":
+            return []
+        result = []
+        if self.status == "paused" or (self.status in {"waiting", "failed", "canceled", "interrupted"} and not active):
+            result.append("start")
+        if self.status in {"waiting", "queued"} | ACTIVE_STATUSES and not self.pause_requested:
+            result.append("pause")
+        if self.status not in TERMINAL_STATUSES:
+            result.append("cancel")
+        if not active:
+            result.append("delete")
+        return result
+
     def as_dict(self, *, include_spec: bool = True, include_args: bool = True) -> dict:
         data = {
             "id": self.id,
@@ -120,6 +144,9 @@ class Job:
             "preset_name": self.preset_name,
             "container": self.container,
             "status": self.status,
+            "pause_requested": self.pause_requested,
+            "paused_from": self.paused_from,
+            "actions": self.actions(),
             "progress": self.progress,
             "speed": self.speed,
             "eta_seconds": self.eta_seconds,
@@ -150,6 +177,27 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(jobs)")}
+            if "execution_json" not in columns:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN execution_json TEXT")
+            if "execution_active" not in columns:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN execution_active INTEGER NOT NULL DEFAULT 0")
+            if "pause_requested" not in columns:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
+            if "paused_from" not in columns:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN paused_from TEXT")
+            # Preserve IDs while replacing the old cross-root uniqueness rule.
+            if self.get_setting("preset_identity_version") != "2":
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute("ALTER TABLE presets RENAME TO presets_v1")
+                self._conn.execute("""CREATE TABLE presets (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL,
+                    category TEXT, description TEXT, root TEXT, file TEXT,
+                    doc_json TEXT, created_at TEXT NOT NULL,
+                    UNIQUE(source, name, root, file))""")
+                self._conn.execute("INSERT INTO presets SELECT * FROM presets_v1")
+                self._conn.execute("DROP TABLE presets_v1")
+                self._set_setting("preset_identity_version", "2")
             self._set_setting("schema_version", str(SCHEMA_VERSION))
             self._conn.commit()
 
@@ -167,6 +215,36 @@ class Store:
             row = self._conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
 
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock:
+            self._set_setting(key, value)
+            self._conn.commit()
+
+    def save_template(self, payload: dict, identity: str | None = None) -> dict:
+        identity = identity or str(uuid.uuid4())
+        with self._lock:
+            self._conn.execute("INSERT INTO task_templates VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, payload_json=excluded.payload_json, updated_at=excluded.updated_at",
+                               (identity, payload["name"], payload.get("description", ""), json.dumps(payload), _now()))
+            self._conn.commit()
+        return {"id": identity, **payload}
+
+    def list_templates(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM task_templates ORDER BY name, id").fetchall()
+        return [{"id": row["id"], **json.loads(row["payload_json"])} for row in rows]
+
+    def delete_template(self, identity: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM task_templates WHERE id=?", (identity,))
+            raw = self.get_setting("runtime_settings")
+            if raw:
+                settings = json.loads(raw)
+                if settings.get("default_task_template_id") == identity:
+                    settings["default_task_template_id"] = None
+                    self._set_setting("runtime_settings", json.dumps(settings))
+            self._conn.commit()
+            return cur.rowcount > 0
+
     # -- jobs --------------------------------------------------------------
 
     def create_job(
@@ -181,6 +259,8 @@ class Store:
         container: str | None,
         spec: dict,
         args: list[str],
+        execution: dict | None = None,
+        auto_start: bool = True,
     ) -> Job:
         job_id = str(uuid.uuid4())
         created = _now()
@@ -188,12 +268,12 @@ class Store:
             self._conn.execute(
                 """INSERT INTO jobs
                 (id,input_root,input_path,output_root,output_path,preset_id,preset_name,
-                 container,status,spec_json,args_json,created_at)
-                VALUES(?,?,?,?,?,?,?,?,'queued',?,?,?)""",
+                 container,status,spec_json,args_json,created_at,execution_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     job_id, input_root, input_path, output_root, output_path,
-                    preset_id, preset_name, container, json.dumps(spec),
-                    json.dumps(args), created,
+                    preset_id, preset_name, container, "queued" if auto_start else "waiting", json.dumps(spec),
+                    json.dumps(args), created, json.dumps(execution) if execution is not None else None,
                 ),
             )
             self._conn.commit()
@@ -212,6 +292,9 @@ class Store:
             preset_name=row["preset_name"],
             container=row["container"],
             status=row["status"],
+            execution_active=bool(row["execution_active"]),
+            pause_requested=bool(row["pause_requested"]),
+            paused_from=row["paused_from"],
             progress=row["progress"],
             speed=row["speed"],
             eta_seconds=row["eta_seconds"],
@@ -223,6 +306,7 @@ class Store:
             finished_at=row["finished_at"],
             spec=json.loads(row["spec_json"]),
             args=json.loads(row["args_json"] or "[]"),
+            execution=json.loads(row["execution_json"]) if row["execution_json"] else None,
         )
 
     def get_job(self, job_id: str) -> Job | None:
@@ -257,7 +341,7 @@ class Store:
                     return None
                 now = _now()
                 self._conn.execute(
-                    "UPDATE jobs SET status='probing', started_at=? WHERE id=? AND status='queued'",
+                    "UPDATE jobs SET status='probing', execution_active=1, started_at=? WHERE id=? AND status='queued'",
                     (now, row["id"]),
                 )
                 self._conn.execute("COMMIT")
@@ -287,10 +371,71 @@ class Store:
         progress_clause = ", progress=1.0" if status == "succeeded" else ""
         with self._lock:
             self._conn.execute(
-                f"UPDATE jobs SET status=?, error=?, finished_at=COALESCE(?, finished_at)"
+                f"UPDATE jobs SET status=?, error=CASE WHEN ? IS NULL AND error='cancel requested' "
+                f"AND ? IN ('probing','running','finalizing') THEN error ELSE ? END, "
+                f"finished_at=COALESCE(?, finished_at)"
                 f"{progress_clause} WHERE id=?",
-                (status, error, finished, job_id),
+                (status, error, status, error, finished, job_id),
             )
+            self._conn.commit()
+
+    def control_job(self, job_id: str, action: str) -> bool:
+        with self._lock:
+            job = self.get_job(job_id)
+            if not job or action not in job.actions():
+                return False
+            if action == "pause":
+                if job.status in ACTIVE_STATUSES:
+                    self._conn.execute("UPDATE jobs SET pause_requested=1 WHERE id=?", (job_id,))
+                else:
+                    self._conn.execute("UPDATE jobs SET status='paused', paused_from=status, pause_requested=1 WHERE id=?", (job_id,))
+            elif action == "start":
+                if job.status == "paused" and job.paused_from in ACTIVE_STATUSES:
+                    self._conn.execute("UPDATE jobs SET pause_requested=0 WHERE id=?", (job_id,))
+                else:
+                    self._conn.execute("UPDATE jobs SET status='queued', pause_requested=0, paused_from=NULL, progress=0, speed=NULL, eta_seconds=NULL, error=NULL, started_at=NULL, finished_at=NULL WHERE id=?", (job_id,))
+            elif action == "delete":
+                self._conn.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
+                self._conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+            else:
+                return False
+            if action != "delete":
+                self._conn.execute("INSERT INTO job_logs(job_id,ts,level,message) VALUES(?,?,?,?)", (job_id, _now(), "info", f"{action} requested"))
+            self._conn.commit()
+            return True
+
+    def pause_requested(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        return bool(job and job.pause_requested)
+
+    def acknowledge_pause(self, job_id: str, paused: bool) -> None:
+        with self._lock:
+            job = self.get_job(job_id)
+            if not job or job.status in TERMINAL_STATUSES:
+                return
+            if paused and job.status in ACTIVE_STATUSES:
+                self._conn.execute("UPDATE jobs SET status='paused', paused_from=status WHERE id=?", (job_id,))
+            elif not paused and job.status == "paused" and job.paused_from in ACTIVE_STATUSES:
+                self._conn.execute("UPDATE jobs SET status=paused_from, paused_from=NULL WHERE id=?", (job_id,))
+            self._conn.commit()
+
+    def delete_job(self, job_id: str) -> bool:
+        return self.control_job(job_id, "delete")
+
+    def complete_job(self, job_id: str, publish) -> bool:
+        """Serialize publication against cancellation; never lose an accepted cancel."""
+
+        with self._lock:
+            job = self.get_job(job_id)
+            if job is None or job.status != "finalizing" or self.cancel_requested(job_id) or job.pause_requested:
+                return False
+            publish()
+            self.set_status(job_id, "succeeded")
+            return True
+
+    def finish_execution(self, job_id: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE jobs SET execution_active=0, paused_from=NULL, pause_requested=0 WHERE id=?", (job_id,))
             self._conn.commit()
 
     def request_cancel(self, job_id: str) -> bool:
@@ -303,7 +448,8 @@ class Store:
             status = row["status"]
             if status in TERMINAL_STATUSES:
                 return False
-            if status == "queued":
+            job = self.get_job(job_id)
+            if status in ("queued", "waiting") or (status == "paused" and job.paused_from not in ACTIVE_STATUSES):
                 self._conn.execute(
                     "UPDATE jobs SET status='canceled', finished_at=? WHERE id=?",
                     (_now(), job_id),
@@ -318,9 +464,7 @@ class Store:
 
     def cancel_requested(self, job_id: str) -> bool:
         job = self.get_job(job_id)
-        return bool(job and job.status == "running" and job.error == "cancel requested") or bool(
-            job and job.status == "probing" and job.error == "cancel requested"
-        )
+        return bool(job and (job.status in ACTIVE_STATUSES or job.status == "paused") and job.error == "cancel requested")
 
     def recover_interrupted(self) -> int:
         """Mark jobs that were active at shutdown as interrupted."""
@@ -329,9 +473,10 @@ class Store:
             cur = self._conn.execute(
                 "UPDATE jobs SET status='interrupted', "
                 "error='service restarted while this job was running', finished_at=? "
-                "WHERE status IN ('probing','running','finalizing')",
+                "WHERE status IN ('probing','running','finalizing') OR (status='paused' AND paused_from IN ('probing','running','finalizing'))",
                 (_now(),),
             )
+            self._conn.execute("UPDATE jobs SET execution_active=0, pause_requested=0 WHERE execution_active=1")
             self._conn.commit()
             return cur.rowcount
 
@@ -373,18 +518,20 @@ class Store:
         file: str | None = None,
         doc: dict | None = None,
     ) -> str:
-        preset_id = str(uuid.uuid4())
         with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM presets WHERE source=? AND name=? AND root IS ? AND file IS ?",
+                (source, name, root, file),
+            ).fetchone()
+            preset_id = row["id"] if row else str(uuid.uuid4())
             self._conn.execute(
                 """INSERT INTO presets(id,name,source,category,description,root,file,doc_json,created_at)
                    VALUES(?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(source,name,file) DO UPDATE SET
+                   ON CONFLICT(id) DO UPDATE SET
                      category=excluded.category, description=excluded.description,
                      doc_json=excluded.doc_json""",
-                (
-                    preset_id, name, source, category, description, root, file,
-                    json.dumps(doc) if doc is not None else None, _now(),
-                ),
+                (preset_id, name, source, category, description, root, file,
+                 json.dumps(doc) if doc is not None else None, _now()),
             )
             self._conn.commit()
         return preset_id

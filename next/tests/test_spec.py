@@ -36,6 +36,11 @@ class SpecValidationTests(unittest.TestCase):
         with self.assertRaises(SpecError):
             TranscodeSpec.from_dict({"subtitles": {"srt_file": "/etc/passwd"}})
 
+    def test_rejects_platform_specific_auxiliary_paths(self):
+        for path in ("C:\\subs.srt", "\\\\server\\share\\subs.srt", ".", "one.srt,two.srt"):
+            with self.subTest(path=path), self.assertRaises(SpecError):
+                TranscodeSpec.from_dict({"subtitles": {"srt_file": path}})
+
     def test_rejects_traversal_chapter_file(self):
         with self.assertRaises(SpecError):
             TranscodeSpec.from_dict({"chapters": {"marker_file": "../../x"}})
@@ -55,6 +60,26 @@ class SpecValidationTests(unittest.TestCase):
     def test_vfr_cfr_mutually_exclusive(self):
         with self.assertRaises(SpecError):
             TranscodeSpec.from_dict({"video": {"vfr": True, "cfr": True}})
+
+    def test_rejects_invalid_rate_control_combinations(self):
+        for video in ({"two_pass": True}, {"turbo": True}, {"quality_type": "abr"},
+                      {"vfr": True, "peak_framerate": True}):
+            with self.subTest(video=video), self.assertRaises(SpecError):
+                TranscodeSpec.from_dict({"video": video})
+
+    def test_rejects_unimplemented_metadata_and_markers(self):
+        for payload in ({"metadata": {"title": "ignored before"}},
+                        {"chapters": {"mode": "markers", "markers": [{"start": "00:00:00"}]}}):
+            with self.subTest(payload=payload), self.assertRaises(SpecError):
+                TranscodeSpec.from_dict(payload)
+
+    def test_rejects_unimplemented_track_overrides(self):
+        for payload in ({"audio": {"tracks": [{"language": "eng"}]}},
+                        {"audio": {"tracks": [{"default_track": True}]}},
+                        {"subtitles": {"tracks": [{"track": 1, "burn": True}]}},
+                        {"dimensions": {"keep_aspect": False}}):
+            with self.subTest(payload=payload), self.assertRaises(SpecError):
+                TranscodeSpec.from_dict(payload)
 
     def test_accepts_minimal_spec(self):
         spec = TranscodeSpec.from_dict({})
@@ -77,8 +102,8 @@ class ArgMappingTests(unittest.TestCase):
         self.assertEqual(args[1], "Fast 1080p30")
 
     def test_two_pass_and_turbo(self):
-        args = self.args({"video": {"two_pass": True, "turbo": True}})
-        self.assertIn("--two-pass", args)
+        args = self.args({"video": {"quality_type": "abr", "bitrate_kbps": 1500, "two_pass": True, "turbo": True}})
+        self.assertIn("--multi-pass", args)
         self.assertIn("--turbo", args)
 
     def test_dimensions(self):
@@ -89,9 +114,9 @@ class ArgMappingTests(unittest.TestCase):
 
     def test_filters(self):
         args = self.args({"filters": {"deinterlace": "slow", "denoise": "nlmeans", "rotate": "90", "grayscale": True}})
-        self.assertIn("--deinterlace", args)
-        self.assertIn("--denoise", args)
-        self.assertIn("--rotate", args)
+        self.assertIn("--deinterlace=mode=3", args)
+        self.assertIn("--nlmeans=medium", args)
+        self.assertIn("--rotate=angle=90:hflip=0", args)
         self.assertIn("--grayscale", args)
 
     def test_audio_tracks_joined(self):
@@ -136,13 +161,26 @@ class ArgMappingTests(unittest.TestCase):
 
     def test_subtitles(self):
         args = self.args({"subtitles": {"behavior": "burn", "burn_track": 1, "srt_file": "subs/x.srt"}})
-        self.assertEqual(args[args.index("--subtitle") + 1], "burn")
-        self.assertEqual(args[args.index("--subtitle-burn") + 1], "1")
+        self.assertEqual(args[args.index("--subtitle") + 1], "1")
+        self.assertIn("--subtitle-burned=1", args)
         self.assertEqual(args[args.index("--srt-file") + 1], "subs/x.srt")
 
     def test_chapters_none(self):
         args = self.args({"chapters": {"mode": "none"}})
-        self.assertIn("--no-chapters", args)
+        self.assertIn("--no-markers", args)
+
+    def test_chapter_csv_mapping(self):
+        args = self.args({"chapters": {"mode": "markers", "marker_file": "chapters.csv"}})
+        self.assertIn("--markers=chapters.csv", args)
+
+    def test_audio_source_is_used(self):
+        args = self.args({"audio": {"tracks": [{"source": "2"}]}})
+        self.assertEqual(args[args.index("--audio") + 1], "2")
+
+    def test_subtitle_tracks_and_foreign_scan(self):
+        args = self.args({"subtitles": {"tracks": [{"track": 2}, {"track": 3}]}})
+        self.assertEqual(args[args.index("--subtitle") + 1], "2,3")
+        self.assertIn("scan", self.args({"subtitles": {"behavior": "foreign"}}))
 
     def test_container(self):
         args = self.args({"container": "mkv"})

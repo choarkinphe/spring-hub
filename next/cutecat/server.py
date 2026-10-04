@@ -11,6 +11,10 @@ Meta
     GET  /health/ready
     GET  /api/v1/capabilities   -> engine + config + feature matrix
     GET  /api/v1/config         -> public config (never the token)
+    GET|POST /api/v1/settings   -> persistent runtime defaults
+    GET|POST /api/v1/task-templates -> reusable structured encoding settings
+    POST /api/v1/output-name    -> safe relative naming expansion
+    GET  /api/v1/system/status  -> read-only service-visible resource metrics
 
 Storage
     GET  /api/v1/storage-roots
@@ -22,6 +26,7 @@ Presets
 
 Probe
     POST /api/v1/probe                   -> scan a file, return titles
+    POST /api/v1/spec/validate           -> non-persistent spec/preset prevalidation
 
 Jobs
     GET  /api/v1/jobs
@@ -47,11 +52,13 @@ from typing import Any
 from . import __version__
 from .config import AppConfig
 from .engine import EngineError, HandBrakeEngine
-from .pathsafe import PathSafetyError, resolve_request
+from .admission import AdmissionError, validate_encoders
+from .pathsafe import PathSafetyError, resolve_request, resolve_spec_files, validate_job_paths
 from .presets import (
     PresetError,
     discover_preset_files,
     load_imported_presets,
+    resolve_job_preset,
 )
 from .encoders import AUDIO_CATALOG_ONLY
 from .spec import (
@@ -72,8 +79,12 @@ from .spec import (
     VIDEO_QUALITY_TYPES,
     VIDEO_TUNES,
     build_engine_args,
+    prepare_job_preset,
 )
 from .store import Store
+from .system_status import SystemStatus
+from .decoders import decoder_inventory
+from .runtime import RuntimeSettings, output_name
 
 MAX_BODY_BYTES = 1_000_000
 
@@ -91,6 +102,8 @@ class AppState:
         self.config = config
         self.store = store
         self.engine = engine
+        self.runtime = RuntimeSettings(config, store)
+        self.system_status = SystemStatus(config)
         self.web_dir = Path(config.web_dir) if config.web_dir else Path(__file__).resolve().parent.parent / "web"
 
 
@@ -118,7 +131,16 @@ def _spec_options() -> dict:
         "audio_mixdowns": sorted(AUDIO_MIXDOWNS),
         "deinterlace": sorted(DEINTERLACE),
         "denoise": sorted(DENOISE),
-        "subtitle_behaviors": sorted(SUBTITLE_BEHAVIORS),
+        "subtitle_behaviors": sorted(SUBTITLE_BEHAVIORS - {"add"}),
+        "ui_constraints": {
+            "bitrate_quality_types": ["abr", "vbr"],
+            "lossless_encoders": ["x264", "x264_10bit", "x265", "x265_10bit", "x265_12bit"],
+            "anamorphic": ["auto", "none", "loose"],
+            "deinterlace": ["off", "skip-spatial", "default", "bob"],
+            "denoise": ["off", "nlmeans", "hqdn3d"],
+            "detelecine": ["off", "default"],
+            "source_subtitle_limit": 1,
+        },
     }
 
 
@@ -132,23 +154,39 @@ def _feature_matrix() -> list[dict]:
     """
 
     return [
+        {"area": "Service resources + codec report", "status": "implemented",
+         "note": "Read-only CPU/memory/GPU/disk metrics for the service-visible environment; unknowns stay unknown. "
+                 "Encoder presence reuses the engine probe; decoder diagnostics and optional independent FFmpeg inventory "
+                 "are labelled by provider, not an all-format compatibility guarantee."},
         {"area": "Native web UI (no noVNC)", "status": "implemented",
          "note": "Hand-written HTML/CSS/JS workbench served from web/."},
-        {"area": "Real HandBrakeCLI invocation", "status": "unverified",
-         "note": "Wired to the real CLI; the binary is absent in the build "
-                 "environment, so only a mock CLI was exercised."},
+        {"area": "Real HandBrakeCLI invocation", "status": "verified",
+         "note": "Real HandBrakeCLI 1.11 CPU tasks verified, including x264/x265 preset encoding; "
+                 "not every encoder/parameter combination is verified."},
         {"area": "Scan / title JSON parsing", "status": "implemented",
          "note": "Defensive parser for --scan --json; unit-tested against "
                  "representative payloads."},
-        {"area": "Official preset loading (--preset-list)", "status": "unverified",
-         "note": "Implemented; requires a real binary to enumerate."},
-        {"area": "Preset JSON import + path-field safety", "status": "implemented",
-         "note": "Validated against path-escape fixtures; engine import is "
-                 "invoked when a binary is present."},
+        {"area": "Official preset loading (--preset-list)", "status": "verified",
+         "note": "Real preset enumeration, normalization and x264 output verified."},
+        {"area": "Preset JSON import + path-field safety", "status": "verified",
+         "note": "UUID identity and immutable task snapshot, imported in the actual encode process; "
+                 "real x265 output and deleted-source behavior verified."},
+        {"area": "Encoder admission", "status": "implemented",
+         "note": "Submission checks effective encoders; execution refreshes detection. "
+                 "Video requires a successful tiny probe; audio uses the engine list. No CPU fallback."},
         {"area": "Structured parameter whitelist", "status": "implemented",
-         "note": "Typed spec -> argv mapping; unknown fields rejected."},
-        {"area": "Persistent queue / cancel / logs", "status": "implemented",
-         "note": "SQLite-backed, exercised end-to-end with the mock CLI."},
+         "note": "Typed spec -> argv; unknown/unsupported values rejected. Real 1.11 CPU contract checks cover "
+                 "geometry, rotation, filters, color, x264/x265 lossless, audio sample rates and source/SRT subtitle indexes. "
+                 "No visual-quality or all-encoder guarantee."},
+        {"area": "Parameter prevalidation + UI constraints", "status": "implemented",
+         "note": "Standalone validation without a source; queue submission validates the same captured spec/UUID first. "
+                 "Checks structure, preset resolution and CLI mapping only; no paths, source tracks, admission or encoding. "
+                 "Preset argv contains overrides, not the full preset command. UI constrains coupled controls; "
+                 "preset/tune/profile/level remain protocol choices, not per-encoder compatibility detection."},
+        {"area": "Persistent queue / controls / settings", "status": "implemented",
+         "note": "Start/retry, process-group pause/resume, record-only delete and dynamic concurrency. "
+                 "Paused processes retain slots; restart cannot resume in-memory progress. "
+                 "Persistent task templates and safe output naming; no media deletion or automatic overwrite."},
         {"area": "Path safety (root escape / symlink)", "status": "implemented",
          "note": "realpath containment checks; unit-tested."},
         {"area": "Workbench tabs (Summary/Dimensions/Filters/Video/Audio/Subtitles/Chapters)",
@@ -158,8 +196,8 @@ def _feature_matrix() -> list[dict]:
                  "the UI rather than faked."},
         {"area": "Hardware encoders (NVENC/QSV/VCE/VideoToolbox/VAAPI/AMF)",
          "status": "unverified",
-         "note": "Passed through only when the real CLI lists them; no GPU "
-                 "was available to test. Names follow HandBrake, not FFmpeg."},
+         "note": "Admission requires a working instantiation probe, not just a help listing. "
+                 "No usable GPU here; blocked NVENC returns 409. Actual GPU jobs remain unverified."},
         {"area": "SMB/NFS mount inside container", "status": "disabled",
          "note": "Mounts are performed by the host / Docker local volume; the "
                  "app never mounts network shares."},
@@ -206,6 +244,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         self._dispatch("POST")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._dispatch("DELETE")
 
     def do_HEAD(self) -> None:  # noqa: N802
         self._dispatch("HEAD")
@@ -263,6 +304,60 @@ class Handler(BaseHTTPRequestHandler):
         # "重新检测" passes refresh=1 to force a real re-probe.
         refresh = (query.get("refresh") or [""])[0] in ("1", "true", "yes")
 
+        if path == "/api/v1/settings":
+            if method == "GET":
+                return self.state.runtime.report()
+            if method == "POST":
+                try:
+                    self.state.runtime.save(body or {})
+                except (ValueError, PathSafetyError) as exc:
+                    raise ApiError(400, str(exc)) from exc
+                return self.state.runtime.report()
+
+        if path == "/api/v1/output-name" and method == "POST":
+            payload = body or {}
+            if set(payload) - {"source", "encoder", "preset", "container", "template"}:
+                raise ApiError(400, "unknown naming field")
+            try:
+                return {"path": output_name(payload.get("template", self.state.runtime.read()["output_name_template"]),
+                    payload.get("source", "source"), payload.get("encoder", "encoder"), payload.get("preset"), payload.get("container", "auto"))}
+            except (ValueError, PathSafetyError) as exc:
+                raise ApiError(400, str(exc)) from exc
+
+        match_template = re.fullmatch(r"/api/v1/task-templates(?:/([0-9a-fA-F\-]+))?", path)
+        if match_template:
+            identity = match_template.group(1)
+            templates = store.list_templates()
+            if identity and not any(t["id"] == identity for t in templates):
+                raise ApiError(404, "task template not found")
+            if method == "GET" and not identity:
+                return {"templates": templates}
+            if method == "DELETE" and identity:
+                with self.state.runtime.lock:
+                    store.delete_template(identity)
+                return {"deleted": True}
+            if method == "POST":
+                payload = body or {}
+                if set(payload) - {"name", "description", "spec", "preset_id", "form_spec", "baseline", "version"}:
+                    raise ApiError(400, "unknown template field")
+                name = payload.get("name")
+                description = payload.get("description", "")
+                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or not isinstance(description, str) or len(description) > 500:
+                    raise ApiError(400, "invalid template name/description")
+                self._prepare_spec(payload.get("spec", {}), payload.get("preset_id", "custom"))
+                try:
+                    if "form_spec" not in payload:
+                        raise SpecError("template form_spec is required")
+                    TranscodeSpec.from_dict(payload["form_spec"])
+                    if payload.get("baseline") is not None:
+                        TranscodeSpec.from_dict(payload["baseline"])
+                except SpecError as exc:
+                    raise ApiError(400, str(exc)) from exc
+                return store.save_template({**payload, "name": name.strip(), "description": description, "version": 1}, identity)
+
+        if path == "/api/v1/system/status" and method == "GET":
+            return self.state.system_status.snapshot()
+
         if path == "/api/v1/capabilities" and method == "GET":
             caps = self.state.engine.probe(refresh=refresh)
             return {
@@ -272,12 +367,14 @@ class Handler(BaseHTTPRequestHandler):
                 "config": cfg.as_public_dict(),
                 "spec_options": _spec_options(),
                 "encoder_catalog": self._encoder_catalog(caps),
+                "decoder_inventory": decoder_inventory(refresh),
                 "features": _feature_matrix(),
             }
 
         if path == "/api/v1/encoders" and method == "GET":
             caps = self.state.engine.probe(refresh=refresh)
-            return {"engine": caps.as_dict(), "encoder_catalog": self._encoder_catalog(caps)}
+            return {"engine": caps.as_dict(), "encoder_catalog": self._encoder_catalog(caps),
+                    "decoder_inventory": decoder_inventory(refresh)}
 
         if path == "/api/v1/config" and method == "GET":
             return cfg.as_public_dict()
@@ -319,10 +416,43 @@ class Handler(BaseHTTPRequestHandler):
             return {"jobs": [j.as_dict(include_spec=False, include_args=False) for j in jobs],
                     "counts": store.counts()}
 
+        if path == "/api/v1/spec/validate" and method == "POST":
+            payload = body or {}
+            wrapped = "spec" in payload or "preset_id" in payload
+            if wrapped and set(payload) - {"spec", "preset_id"}:
+                raise ApiError(400, "validation accepts only spec and preset_id")
+            raw = payload.get("spec", {}) if wrapped else payload
+            spec, preset_id, preset_name, document, args = self._prepare_spec(
+                raw, payload.get("preset_id") if wrapped else None,
+            )
+            return {
+                "valid": True, "spec": spec.to_dict(), "args": args,
+                "preset_id": preset_id, "preset_name": preset_name,
+                "args_scope": "overrides" if document else "custom",
+                "checked": ["structure", "preset", "mapping"],
+                "not_checked": ["paths", "source_tracks", "encoder_readiness", "encoding"],
+            }
+
         if path == "/api/v1/jobs" and method == "POST":
             return self._create_job(body or {})
 
+        action_match = re.fullmatch(r"/api/v1/jobs/([0-9a-fA-F\-]+)/(start|pause)", path)
+        if action_match and method == "POST":
+            identity, action = action_match.groups()
+            if store.get_job(identity) is None:
+                raise ApiError(404, "job not found")
+            if not store.control_job(identity, action):
+                raise ApiError(409, f"job cannot {action}")
+            return store.get_job(identity).as_dict()
+
         match = re.fullmatch(r"/api/v1/jobs/([0-9a-fA-F\-]+)", path)
+        if match and method == "DELETE":
+            identity = match.group(1)
+            if store.get_job(identity) is None:
+                raise ApiError(404, "job not found")
+            if not store.delete_job(identity):
+                raise ApiError(409, "active job must finish or be canceled before deletion")
+            return {"deleted": True, "media_deleted": False}
         if match and method == "GET":
             job = store.get_job(match.group(1))
             if job is None:
@@ -441,6 +571,25 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(503, f"engine scan unavailable: {exc}") from exc
         return {"root": root_id, "path": resolved.relative, "scan": scan}
 
+    def _prepare_spec(self, raw: dict, preset_id=None, *, input_root=None):
+        """Share non-persistent preset/mapping preparation with prevalidation."""
+        try:
+            spec = TranscodeSpec.from_dict(raw)
+            if input_root is not None:
+                resolve_spec_files(spec, list(self.state.config.storage_roots), input_root)
+            identity, name, document = resolve_job_preset(
+                store=self.state.store, engine=self.state.engine,
+                preset_id=preset_id, name=spec.preset,
+            )
+            document = prepare_job_preset(document, raw)
+            spec.preset = name
+            args = build_engine_args(spec, overrides=raw if document else None, preset=document)
+        except (SpecError, PresetError, PathSafetyError) as exc:
+            raise ApiError(400, f"invalid spec: {exc}") from exc
+        except EngineError as exc:
+            raise ApiError(503, str(exc)) from exc
+        return spec, identity, name, document, args
+
     def _create_job(self, body: dict) -> dict:
         input_ref = body.get("input") or {}
         output_ref = body.get("output") or {}
@@ -461,23 +610,24 @@ class Handler(BaseHTTPRequestHandler):
                 str(output_ref.get("root", "")),
                 str(output_ref.get("path", "")),
             )
-            from .pathsafe import assert_writable
-
-            assert_writable(output_path)
+            validate_job_paths(input_path, output_path)
         except PathSafetyError as exc:
             raise ApiError(400, str(exc)) from exc
 
         if output_path.absolute.exists() and self.state.config.engine.refuse_overwrite:
             raise ApiError(409, "output already exists")
 
+        overrides = body.get("spec") or {}
+        spec, preset_id, preset_name, document, args = self._prepare_spec(
+            overrides, body.get("preset_id"), input_root=input_path.root.id,
+        )
         try:
-            spec = TranscodeSpec.from_dict(body.get("spec") or {})
-        except SpecError as exc:
-            raise ApiError(400, f"invalid spec: {exc}") from exc
-
-        preset_id = str(body.get("preset_id") or spec.preset or "custom")
-        preset_name = spec.preset
-        args = build_engine_args(spec)
+            validate_encoders(spec, self.state.engine.probe(), preset=document, overrides=overrides)
+        except AdmissionError as exc:
+            raise ApiError(exc.status, str(exc)) from exc
+        except EngineError as exc:
+            raise ApiError(503, str(exc)) from exc
+        execution = {"preset": document, "overrides": overrides}
 
         job = self.state.store.create_job(
             input_root=input_path.root.id,
@@ -489,6 +639,8 @@ class Handler(BaseHTTPRequestHandler):
             container=spec.container,
             spec=spec.to_dict(),
             args=args,
+            execution=execution,
+            auto_start=self.state.runtime.read()["auto_start"],
         )
         self.state.store.add_log(job.id, "info", f"job queued (preset={preset_id})")
         return job.as_dict()
@@ -501,6 +653,8 @@ class Handler(BaseHTTPRequestHandler):
         web_dir = self.state.web_dir
         if path in ("/", "/index.html"):
             target = web_dir / "index.html"
+        elif path in ("/styles.css", "/app.js"):
+            target = web_dir / path.lstrip("/")
         elif path.startswith("/assets/"):
             rel = path[len("/assets/"):]
             target = (web_dir / rel).resolve()

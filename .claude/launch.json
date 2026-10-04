@@ -17,6 +17,14 @@
       "url": "http://127.0.0.1:18083"
     },
     {
+      "name": "cute-cat-queue-preview",
+      "runtimeExecutable": "wsl",
+      "runtimeArgs": ["-d", "Ubuntu", "--", "bash", "-lc", "CUTE_CAT_HB_PORT=18085 CUTE_CAT_HB_STATE=/tmp/cute-cat-queue-preview bash next/preview.sh"],
+      "port": 18085,
+      "autoPort": false,
+      "url": "http://127.0.0.1:18085"
+    },
+    {
       "name": "cute-cat-handbrake-preview",
       "runtimeExecutable": "wsl",
       "runtimeArgs": [

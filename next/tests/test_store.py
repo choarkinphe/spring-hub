@@ -67,6 +67,17 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(self.store.request_cancel(job.id))
         self.assertTrue(self.store.cancel_requested(job.id))
 
+    def test_cancel_survives_active_transitions(self):
+        job = self._job()
+        self.store.claim_next_queued()
+        self.store.request_cancel(job.id)
+        self.store.set_status(job.id, "running")
+        self.store.set_status(job.id, "finalizing")
+        self.assertTrue(self.store.cancel_requested(job.id))
+        published = []
+        self.assertFalse(self.store.complete_job(job.id, lambda: published.append(True)))
+        self.assertEqual(published, [])
+
     def test_update_progress(self):
         job = self._job()
         self.store.update_job(job.id, progress=0.5, speed="42.5", eta_seconds=10)

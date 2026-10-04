@@ -186,7 +186,7 @@ def encoder_catalog(caps: EngineCapabilities, video: dict, hardware: dict, audio
             if not caps.available:
                 installed: bool | None = False
             elif verdict is not None:
-                installed = verdict != "absent"
+                installed = None if verdict == "unknown" else verdict != "absent"
             elif not known:
                 installed = None
             else:
@@ -210,6 +210,8 @@ def encoder_catalog(caps: EngineCapabilities, video: dict, hardware: dict, audio
                 else:
                     status = "unsupported"
                     reason = "auto 不是 HandBrake 命令行接受的音频编码器取值，任何引擎构建都不会提供；请选择具体编码器，或使用直通。"
+            elif verdict == "unknown":
+                status, reason, selectable = "unknown", "实例化检测超时或执行失败，无法确认编码器能力，请重新检测。", False
             elif verdict == "absent":
                 # Genuinely missing from this build — the only case where a
                 # different engine build would help.

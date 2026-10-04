@@ -26,12 +26,12 @@ universe), but **no usable GPU device and no container runtime**, so:
 
 | Claim | Evidence |
 |---|---|
-| Service, API, queue, worker, web UI | **Verified** — 145 automated tests + a live end-to-end run |
-| Spec→CLI argument mapping | **Verified** — unit tests over the whitelist |
+| Service, API, queue, worker | **Verified** — unittest regression suite; see [CONVERGENCE.md](CONVERGENCE.md) for the current safety changes |
+| Spec→CLI argument mapping | **Partially verified** — unit tests plus 33 real CPU encodes covering geometry, filters, colors, lossless, audio and subtitles; not every encoder/container/media combination has been exercised |
 | Scan JSON parsing | **Verified** — parser unit tests |
 | Preset import + path-field safety | **Verified** — unit tests incl. escape fixtures |
 | Path safety (root escape / symlink) | **Verified** — unit tests |
-| Real HandBrakeCLI invocation | **Verified against the real binary** for `--version`, `--help`, `--preset-list` and the encoder probe; the encode path itself is still exercised mainly against a faithful interface **mock** |
+| Real HandBrakeCLI invocation | **Verified against the real binary** for version/help/presets/probe and minimal x264 single-pass and bitrate multi-pass/turbo jobs, including output scan and publication; most regression cases still use the interface **mock** |
 | Real `--scan`/`--preset-list` output | **Verified** — real CLI output parsed |
 | Encoder presence detection | **Verified** — the instantiation probe was run against the real 1.11.0 build |
 | Docker build/run | **NOT verified** — no container runtime available |
@@ -52,8 +52,9 @@ matrix documented below.
 | Real HandBrakeCLI invocation | verified | Real 1.11.0 binary; capability probe, scan and preset list parsed from it |
 | Scan / title JSON parsing | implemented | Defensive parser, unit-tested |
 | Official presets (`--preset-list`) | verified | Parsed from the real binary |
-| Preset JSON import + safety | implemented | Engine import invoked when a binary is present |
+| Preset JSON import + safety | verified | Engine-normalized task snapshot; reimported in the actual encode process; real x265 output verified |
 | Structured parameter whitelist | implemented | Typed spec → argv; unknown fields rejected |
+| Parameter prevalidation + UI constraints | implemented | No source required; preset UUID resolution and sparse override mapping shared with creation; no path/source/admission/encode guarantee |
 | Persistent queue / cancel / logs | implemented | SQLite-backed, end-to-end tested with the mock |
 | Path safety | implemented | `realpath` containment; symlink escapes blocked |
 | 7 HandBrake tabs | implemented | Summary/Dimensions/Filters/Video/Audio/Subtitles/Chapters |
@@ -77,8 +78,8 @@ cd /mnt/c/Users/xiaohua/Documents/code/cute-cat
 #    hardware encoders — see "Building a hardware-enabled engine".
 sudo apt-get install -y handbrake-cli
 
-# 2. Run the test suite (no engine needed; uses the mock).
-bash next/preview.sh        # or run the service directly, below
+# 2. Run the test suite (stdlib only; no dependencies to install).
+PYTHONPATH=next:next/tests python3 -m unittest discover -s next/tests -t next/tests
 
 # 3. Start the service.
 export PYTHONPATH="$PWD/next"
@@ -104,8 +105,57 @@ for f in tests/test_*.py; do python3 "$f"; done
 python3 -m unittest discover -s tests -t tests
 ```
 
-Expected: **98 tests, all passing.** Tests use the interface mock and never
-require a real engine, GPU or media file.
+Tests use the interface mock and generated fixtures; they do not require a real
+engine, GPU or media library. Also run the JavaScript control regression suite
+from `next/`:
+
+```bash
+node --test tests/test_choices.cjs
+```
+
+Current counts and real-engine evidence are recorded in
+[CONVERGENCE.md](CONVERGENCE.md). An opt-in **real HandBrakeCLI 1.11.0** contract
+matrix generates isolated CPU fixtures, performs 33 encodes, and checks resolved
+job settings plus output scans (no mock substitution):
+
+```bash
+PYTHONPATH=. python3 tools/verify_cli_mapping.py
+```
+
+### Advanced parameter contract (HandBrakeCLI 1.11)
+
+- Anamorphic uses `--auto-anamorphic`, `--non-anamorphic` or
+  `--loose-anamorphic`. Legacy strict and unmodelled custom PAR are rejected.
+- Rotation and horizontal flip are one `--rotate=angle=90:hflip=1` setting.
+  Sparse preset overrides preserve the other snapshot component. Yadif legacy
+  fast maps to skip-spatial, slow/slower to the default mode (they are aliases,
+  not three engine speed levels). Custom denoise means HQDN3D key=value settings.
+- NLMeans/HQDN3D are distinct filters; chroma/sharpen use medium presets.
+  Numeric deblock is mapped to `strength=strong:thresh=<0..10>`; it is a
+  threshold, not the removed legacy strength scale. Custom filters validate
+  supported keys and ranges; simultaneous lapsharp/unsharp is rejected.
+- Color matrix bt709/bt601/bt2020 maps to 709/601/2020 **signalling only**.
+  Primaries/transfer use the `--colorspace` conversion filter. Ambiguous values
+  are rejected; these checks do not prove visual color accuracy or HDR quality.
+- Audio sample rates remain Hz in the API, converted to CLI kHz via `--arate`.
+  Track names use `--aname`; commas are forbidden because they delimit tracks.
+  Copy/none cannot accept encoding controls. Language/default audio overrides
+  remain unsupported.
+- CQP has no equivalent generic CLI flag and is rejected. `lossless` is limited
+  to x264 (`-q 0`) and x265 (`-q 0 --encopts lossless=1`). This selects encoder
+  lossless mode, **not** bit-identical source pixels after scaling/color filters.
+- Source subtitle burn/default numbers index the **selected subtitle list**,
+  starting at 1. SRT independently uses `srt_burn`, `srt_default`,
+  `srt_language` (ISO 639-2), `srt_offset_ms`, and `srt_codeset` (UTF-8 default).
+  A single SRT file is supported; only one source/SRT can burn or be default.
+- Preset tune/profile/level resets are explicit; source-rate `auto` is reset in
+  a private task snapshot (CLI `-r 0` is invalid). Empty dimension limits,
+  encoder preset resets without a named value, and color conversion resets
+  without supported semantics return 400 rather than pretending to work.
+
+The matrix proves these CPU mappings on this build and generated media, not
+all encoder/container/media combinations, GPU operation, visual subtitle quality,
+or exhaustive custom filter compatibility.
 
 ### Checking engine availability
 
@@ -134,19 +184,169 @@ next/
     cli.py        entrypoint
   web/            index.html, styles.css, app.js (no build step)
   tools/          mock_handbrakecli.py (tests only)
-  tests/          98 tests
+  tests/          unittest + Node control regression tests
 ```
+
+### Workbench flow
+
+The landing page shows **system status and a full-width task list**. Click a task
+to open its progress, cancellation and logs in a right-side drawer. Closing the
+drawer stops detail/log polling and returns focus to the task; late responses
+cannot reopen it. Successful creation returns to the list, not an automatic drawer.
+Queue totals use full-database counts; the recent list is limited to 100 jobs.
+Refresh failures are labelled as stale/unknown rather than a healthy empty queue.
+
+The Format Factory-inspired queue work area adds a batch toolbar, status filters,
+filename/path/preset search and per-task selection. Rows show a format document
+icon, source/output references, preset, creation time, labelled progress bar,
+speed/remaining time when reported, and failure reason. On narrow screens the
+same information stacks without horizontal scrolling. Filters and batch actions
+apply only to the **recent 100 tasks**, while the separate summary uses full-store
+counts. Selection persists across filters and explicitly reports hidden selections.
+Batch requests run sequentially and only for server-permitted actions; cancel and
+record deletion require confirmation, and partial failures remain selected with
+an explicit result. Deleting records never deletes source or output media.
+
+### Resource and codec status
+
+The homepage shows only four compact values: CPU utilization, used/total memory,
+visible GPU count, and minimum available capacity across the service-data disk
+and configured writable roots (deduplicated by filesystem, never summed).
+Unavailable relevant disks mark the summary partially unknown. This is a quick
+snapshot, not a guarantee of output capacity or GPU encoding readiness.
+
+**系统详情** opens a right-side drawer with Resource, Storage and Codec sections.
+Model/driver/quota/path details live there; sampling notes and the full codec
+inventory are collapsible. Closing the drawer leaves lightweight summary updates
+running but avoids rebuilding the detailed DOM. Unknown/failed updates stay
+explicit in a short homepage notice, with full errors in the drawer.
+
+`GET /api/v1/system/status` is authenticated like the other API routes and is
+read-only. It samples the **service-visible Linux/WSL environment**, not the
+whole Windows host. CPU model/counts and utilization come from `/proc` (interval
+average, first sample unknown); memory uses MemTotal minus MemAvailable. Readable
+cgroup v2 limits are shown separately. GPU data uses a bounded `nvidia-smi` query,
+including WSL's tool path, or sysfs PCI/DRM fallback. Missing metrics stay unknown:
+this machine's GT 730 reports model/driver/VRAM but utilization is N/A.
+
+Disk capacity uses statvfs for the system disk, database directory and configured
+storage roots. A missing configured mount marker blocks reporting the underlying
+local disk as NAS capacity. Same-filesystem paths are grouped, not summed; free
+space is the current user's available capacity. WSL's virtual disk capacity is
+not the Windows drive's remaining space and does not guarantee backing-store
+space or output-write success.
+
+Resource responses are cached for 2 seconds; GPU queries for 20 seconds. The UI
+refreshes resources approximately every 6 seconds while visible, independently
+of the 2-second queue poll. Resource polling never performs encoder test encodes
+or changes the creation form. Unsupported platforms/permissions/query failures
+are reported per section, preserving other readable data.
+
+The expandable codec report reuses HandBrake's video instantiation probe and
+audio help list: **built into the engine** is distinct from **hardware usable**.
+A blocked NVENC/QSV encoder can be installed but unusable here. Passthrough/no
+encoding are not installable codecs. HandBrake hardware-decoder diagnostics
+separate not-compiled, unavailable, reported and unknown; they are not actual
+per-format decode tests. HandBrake has no complete software-decoder enumeration
+CLI, so that list is explicitly unknown, with actual source scan as the evidence.
+If an independent `ffmpeg` is installed, its `-decoders` list is shown separately;
+it is never called HandBrake's internal list or used for job admission. No tool
+or codec is installed by this report. Explicit **重新检测编解码器** refreshes the
+cached codec detection; ordinary resource refresh does not.
+
+**创建任务** opens a wide right-side drawer containing the seven encoding tabs. **选择文件**
+opens a separate storage browser on top; selecting a file returns to task settings.
+Preset and encoder drawers remain available inside the creation flow. Keyboard
+focus stays within the topmost modal and returns to its trigger on close.
+
+Closing creation keeps the draft in memory for this page session (not persisted
+across reloads) and invalidates pending validation. During the actual creation
+POST, close is blocked until the result arrives. Errors remain in the dialog.
+Successful submission closes creation, selects the new job on the landing page,
+and clears source/output/validation while retaining encoding settings and the
+preset baseline for the next task. It still does not imply successful encoding.
+
+### Task controls and system settings
+
+Task rows and the redesigned detail drawer expose actions permitted by the
+server. Details refresh silently: no recurring loading text, unchanged sections
+are not rebuilt, and log scroll/collapsed sections stay in place.
+
+- **Start/Continue/Retry**: waiting jobs enter the queue; paused active jobs
+  continue the same process; failed/canceled/interrupted jobs restart encoding
+  using their stored execution snapshot. Successful jobs are not re-run in place.
+- **Pause**: queued/waiting jobs stop being claimable. Encoding processes use
+  Linux process-group SIGSTOP/SIGCONT. Acknowledged pause retains the process,
+  staging files, output lock **and concurrency slot**; paused time is excluded
+  from encode timeout. Probe/scan stages pause at boundaries, not mid-scan.
+- **Cancel** takes precedence over pause and resumes a frozen process before
+  termination. Restarting the service marks active paused tasks interrupted;
+  they cannot resume their old in-memory progress.
+- **Delete** requires confirmation and removes only the job record and logs,
+  never source or output media. Active tasks, including active paused tasks,
+  must finish/cancel and release execution before deletion. Retry still refuses
+  existing output under the configured no-overwrite policy.
+
+**系统设置** is a separate drawer. Its allowlisted settings are persisted in the
+next SQLite database (overriding initial TOML defaults, without rewriting TOML):
+concurrency 1–8, automatic start, encode timeout, default writable output root,
+output naming rule and default task template. Increasing concurrency enables
+new claims; reducing it lets existing work drain without termination. Timeout
+is captured for each execution. Engine paths, credentials, mount definitions,
+raw CLI and overwrite policy are not editable here.
+
+Output naming supports `{source}`, `{encoder}`, `{preset}`, `{ext}` in a relative
+path. Substitutions are sanitized path components; unknown placeholders,
+absolute paths and traversal are rejected. Name preview and creation defaults
+share backend expansion. Manual filename edits are preserved, stale naming
+responses ignored, and name collisions never trigger automatic overwrite.
+
+Encoding task templates have stable UUIDs and can be saved from current encoding
+controls, applied/edited/deleted and selected as the default in settings. They
+retain the controlled form and preset baseline so unchanged defaults do not
+become preset overrides; no source/output reference is stored. These are distinct
+from official/imported HandBrake presets. New jobs resolve and freeze presets
+again; deleting a template does not alter existing queued execution snapshots.
+Defaults apply to new drafts, not reopened edited drafts or queued jobs.
+
+Pause/continue is tested on this Linux CPU build. GPU driver behavior while
+suspended remains unverified; the process keeps hardware/memory resources while
+paused. The service remains a single-process queue manager.
 
 ### How a job runs
 
-1. The browser posts a **structured spec** (never raw CLI flags) to
-   `POST /api/v1/jobs`, with a storage-root id and a *relative* path.
-2. The server validates paths (`realpath` containment), validates the spec
-   against the whitelist, translates it to argv, and stores the job.
-3. The worker claims the job atomically from SQLite, re-validates the paths,
-   runs `--scan --json`, then runs the encode with `--json`.
-4. `--json` progress lines on stderr update the job row; every line is logged.
-5. Cancellation signals the process group; partial output is removed.
+1. The browser captures a **structured spec** (never raw CLI flags) and preset
+   identity, calls `POST /api/v1/spec/validate`, then submits the same captured
+   settings to `POST /api/v1/jobs` with storage-root ids and *relative* paths.
+   Validation failure or changes while validation is pending prevent submission.
+2. The server validates paths (`realpath` containment) and the spec whitelist,
+   resolves the official preset name or imported UUID, exports an engine-normalized
+   immutable preset snapshot, and admits the effective encoders before storing the job.
+   Unavailable/absent encoders return 409; unknown detection or a missing engine returns 503.
+3. The worker claims the job atomically from SQLite, re-validates paths and
+   mount markers, and locks the canonical output path. SRT/CSV paths are relative
+   to the **input storage root** and become absolute argv values after validation.
+4. After taking the output lock, the worker refreshes capability detection.
+   Preset jobs import their stored snapshot from a private local temporary directory
+   and select it **in the same CLI process that encodes**. Only explicitly supplied
+   spec fields override it; default dataclass values do not override the preset.
+   The UI sends an imported UUID and omits unchanged controls after preset selection.
+   Source JSON edits/deletion and later reimports do not change already queued snapshots.
+   After source scan, encoding writes to a private staging directory beside the
+   destination. Parsed progress updates the job; task lifecycle messages are
+   logged, while raw stderr is retained only as a bounded failure tail.
+5. In `finalizing`, the worker checks non-empty output and scans it for a title
+   with positive duration. Only then is it published and progress set to 100%.
+6. Cancellation terminates the encode process group and removes this job's
+   staging files, never an existing destination. Scan cancellation waits for
+   scan to return (bounded by 120 seconds).
+
+By default publication uses an atomic hard link that fails if the destination
+exists. Filesystems without hard-link support fail closed; verify SMB/NFS on the
+target host. With `refuse_overwrite=false`, a validated result atomically replaces
+the destination. SQLite and the adjacent `output-locks/` directory must be local;
+instances using different database directories do not share the same lock domain.
+See [CONVERGENCE.md](CONVERGENCE.md) for crash-consistency and remaining limits.
 
 ### Engine CLI surface used
 
@@ -154,7 +354,8 @@ next/
 HandBrakeCLI --version
 HandBrakeCLI --help
 HandBrakeCLI --preset-list
-HandBrakeCLI --preset-import-file <file>
+HandBrakeCLI --preset-import-file <private copy> --preset <name> --preset-export __cute_cat_job__
+HandBrakeCLI -i <in> -o <out> --preset-import-file <snapshot> --preset __cute_cat_job__ [explicit overrides] --json
 HandBrakeCLI -i <in> --scan --json
 HandBrakeCLI -i <in> -o <out> [whitelisted flags] --json
 HandBrakeCLI -i <probe clip> -o <tmp> -f av_mkv -e <encoder> --previews 1:0
@@ -297,20 +498,72 @@ image.
 GET  /health/live | /health/ready
 GET  /api/v1/capabilities          engine + config + feature matrix + options
 GET  /api/v1/config                public config (never the token)
+GET  /api/v1/system/status         service-visible CPU/GPU/memory/disk metrics
 GET  /api/v1/storage-roots
 GET  /api/v1/storage-roots/<id>/entries?path=<rel>
 GET  /api/v1/encoders[?refresh=1]  encoder catalog; refresh=1 forces a re-probe
 GET  /api/v1/presets               official + imported + candidate files
 POST /api/v1/presets/import        import a preset JSON from a root
 POST /api/v1/probe                 scan a file
+POST /api/v1/spec/validate         bare spec or {spec, preset_id} → validation + argv scope
 GET|POST /api/v1/jobs
 GET  /api/v1/jobs/<id>
 POST /api/v1/jobs/<id>/cancel
+POST /api/v1/jobs/<id>/start | /pause
+DELETE /api/v1/jobs/<id>             record/logs only, never media
 GET  /api/v1/jobs/<id>/logs
+GET|POST /api/v1/settings            validated persistent runtime defaults
+POST /api/v1/output-name             safe naming expansion/preview
+GET|POST /api/v1/task-templates
+POST|DELETE /api/v1/task-templates/<id>
 ```
 
 Auth: when `security.api_token` is set, every `/api/v1/*` call needs
 `Authorization: Bearer <token>` or `X-API-Token: <token>`.
+
+### Parameter prevalidation
+
+The workbench's **预校验参数** button works without a selected source. It reports
+pending/passed/failed/stale states and expandable submitted JSON/argv. Changing
+settings invalidates the result; duplicate validation/queue clicks are ignored
+while a request is pending. Queue submission always revalidates, not just when
+the last result was green.
+
+```json
+{
+  "preset_id": "<imported UUID or exact official name>",
+  "spec": {
+    "preset": "<matching preset name>",
+    "dimensions": {"width": 320}
+  }
+}
+```
+
+Use `preset_id: "custom"` and omit `spec.preset` for custom settings. Bare spec
+bodies remain supported. Wrapper requests accept only `spec` and `preset_id`.
+Imported identities distinguish same-name presets from different files.
+
+A successful response includes `valid`, parsed `spec`, `args`, `preset_id`,
+`preset_name`, `args_scope`, `checked` and `not_checked`. `args_scope: "overrides"`
+means argv contains preset selection plus explicit overrides, **not** a complete
+encoding command. Parsed `spec` includes dataclass defaults; those are not the
+effective inherited preset settings. Creation resolves the preset again and
+stores its own immutable snapshot; validation does not freeze the engine state.
+
+Checks are structure, preset resolution and CLI mapping. No job/log/output
+folder is created. Relative path syntax is checked, but file existence, root
+containment/mount state, source tracks, encoder readiness and actual encoding
+are not checked here. Custom structure validation works without an engine;
+preset resolution requires one. Errors return 400 for bad parameters/preset
+identity or 503 for engine errors. Creation and execution retain their full
+safety checks and can still reject/fail after prevalidation passes.
+
+`capabilities.spec_options.ui_constraints` drives supported filter/geometry
+choices and quality/multi-pass/lossless relationships. The UI omits inactive
+crop/audio/subtitle/chapter controls and keeps preset overrides sparse.
+Encoder preset/tune/profile/level choices remain protocol vocabulary, **not**
+per-encoder compatibility detection. No GPU/container/media compatibility
+promise is implied.
 
 ---
 
@@ -323,7 +576,9 @@ Auth: when `security.api_token` is set, every `/api/v1/*` call needs
    "starts" is not "encodes your media"; verify on the target host.
 3. **Upstream HandBrake source unobtainable** here (network policy) → no
    hardware-enabled build recipe; document the one you use.
-4. **A real end-to-end encode is not part of the suite** → the encode path is
-   exercised against the mock. Run one manual job against the real CLI on the
-   target host before relying on it.
+4. **Real-engine regression coverage is limited** → preset snapshots and
+   admission have been implemented; 33 CPU contract encodes and HTTP worker jobs
+   verify the mappings above. The default regression suite mainly uses a mock,
+   and arbitrary encoder/container/media combinations remain unverified; see
+   [CONVERGENCE.md](CONVERGENCE.md).
 5. **Live preview/thumbnails not implemented** → disabled in the UI by design.

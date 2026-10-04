@@ -34,6 +34,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 from .config import EngineConfig
@@ -71,6 +72,7 @@ class EngineCapabilities:
     #: Kept separate from ``notes`` so the UI can say "detection was partial"
     #: without implying the engine is broken.
     probe_notes: list[str] = field(default_factory=list)
+    decoder_backends: dict[str, dict] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -90,6 +92,7 @@ class EngineCapabilities:
             "hardware_status": self.hardware_status,
             "video_encoder_probe": self.video_encoder_probe,
             "probe_notes": self.probe_notes,
+            "decoder_backends": self.decoder_backends,
         }
 
 
@@ -392,6 +395,7 @@ class HandBrakeEngine:
             hardware_status=self._parse_hardware_status(help_text),
             video_encoder_probe=instantiable,
             probe_notes=probe_notes,
+            decoder_backends=self._parse_decoder_backends(help_text),
         )
 
     def _probe_encoder_instantiation(
@@ -455,10 +459,10 @@ class HandBrakeEngine:
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
-        present = {name for name, verdict in outcomes.items() if verdict != "absent"}
+        present = {name for name, verdict in outcomes.items() if verdict in ("works", "blocked")}
 
         control = next((name for name in INSTANTIATION_CONTROL_ENCODERS if name in wanted), None)
-        if control is not None and control not in present:
+        if control is not None and outcomes.get(control) != "works":
             notes.append(
                 f"实例化检测未能确认必然存在的 {control}，结果不可信，已忽略；"
                 "编码器“未安装”的结论可能不准确。"
@@ -472,7 +476,7 @@ class HandBrakeEngine:
         return outcomes, notes
 
     def _instantiate_encoder(self, binary: str, clip: str, workdir: str, encoder: str) -> str:
-        """Instantiate ``encoder`` and report ``works`` / ``blocked`` / ``absent``."""
+        """Report ``works`` / ``blocked`` / ``absent`` / ``unknown`` (probe failure)."""
 
         # ``encoder`` is already a CLI name, so the suffix is only for the file.
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", encoder)
@@ -491,7 +495,7 @@ class HandBrakeEngine:
         try:
             proc = _run(cmd, timeout=PROBE_ENCODER_TIMEOUT)
         except (OSError, subprocess.SubprocessError):
-            return "absent"
+            return "unknown"
         finally:
             # A successful probe writes a real file; never leave it behind.
             try:
@@ -500,7 +504,7 @@ class HandBrakeEngine:
                 pass
         text = (proc.stdout or "") + (proc.stderr or "")
         if not self._parse_job_video_encoder(text):
-            return "absent"
+            return "absent" if re.search(r"Unknown video (?:codec|encoder)", text, re.I) else "unknown"
         # A muxed video track means the encoder ran to completion. Do not use
         # the exit code: a successful x265 encode exits 4.
         return "works" if MUX_VIDEO_TRACK_RE.search(text) else "blocked"
@@ -585,6 +589,26 @@ class HandBrakeEngine:
             elif "is available" in detail:
                 status[family] = "detected"
         return status
+
+    @staticmethod
+    def _parse_decoder_backends(text: str) -> dict[str, dict]:
+        result = {}
+        for line in text.splitlines():
+            match = re.search(r"\b(nvdec|qsv|videotoolbox):\s*(.*)", line, re.I)
+            if not match:
+                continue
+            name, detail = match.group(1).lower(), match.group(2).strip()
+            lower = detail.lower()
+            status = "unknown"
+            if "not compiled" in lower:
+                status = "not_compiled"
+            elif "not available" in lower:
+                status = "unavailable"
+            elif re.search(r"\bis available\b", lower):
+                status = "reported"
+            result[name] = {"status": status, "reason": detail, "source": "HandBrakeCLI diagnostics",
+                            "note": "后端诊断，不是逐格式解码实测。"}
+        return result
 
     @staticmethod
     def _parse_muxers(help_text: str) -> list[str]:
@@ -689,6 +713,33 @@ class HandBrakeEngine:
             raise EngineError((proc.stderr or proc.stdout or "preset import failed").strip())
         return (proc.stdout or "") + (proc.stderr or "")
 
+    def export_preset(self, name: str, document: dict | None = None) -> dict:
+        """Resolve a preset with the engine; never rely on a previous CLI process."""
+        binary = self.binary_path()
+        if binary is None:
+            raise EngineError("HandBrakeCLI is not available")
+        with tempfile.TemporaryDirectory(prefix="cute-cat-preset-") as directory:
+            cmd = [binary]
+            if document is not None:
+                imported = Path(directory) / "import.json"
+                imported.write_text(json.dumps(document), encoding="utf-8")
+                cmd.extend(["--preset-import-file", str(imported)])
+            cmd.extend(["--preset", name, "--preset-export", "__cute_cat_job__"])
+            try:
+                proc = _run(cmd, timeout=60)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise EngineError(f"preset resolution failed: {exc}") from exc
+            if proc.returncode != 0:
+                raise EngineError(f"preset resolution failed: {(proc.stderr or proc.stdout).strip()}")
+            for doc in _extract_json_documents(proc.stdout or ""):
+                if (isinstance(doc, dict) and isinstance(doc.get("PresetList"), list)
+                        and len(doc["PresetList"]) == 1
+                        and isinstance(doc["PresetList"][0], dict)
+                        and doc["PresetList"][0].get("PresetName") == "__cute_cat_job__"
+                        and not doc["PresetList"][0].get("Folder")):
+                    return doc
+            raise EngineError("preset resolution produced no preset JSON")
+
     # -- scan --------------------------------------------------------------
 
     def scan(self, input_path: str, *, timeout: int = 120) -> dict:
@@ -733,7 +784,8 @@ class HandBrakeEngine:
         adapted = list(args)
         if any(flag in adapted for flag in ("-e", "-E", "--audio-fallback")):
             caps = self.probe()
-            for flag, kind, reported in (("-e", "video", caps.encoders), ("-E", "audio", caps.audio_encoders)):
+            video_names = list(set(caps.encoders) | set(caps.video_encoder_probe or {}))
+            for flag, kind, reported in (("-e", "video", video_names), ("-E", "audio", caps.audio_encoders)):
                 if flag in adapted:
                     index = adapted.index(flag) + 1
                     adapted[index] = ",".join(cli_encoder(kind, value, reported) or value for value in adapted[index].split(","))
@@ -755,6 +807,8 @@ class HandBrakeEngine:
         args: Sequence[str],
         on_event: Callable[[dict], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        should_pause: Callable[[], bool] | None = None,
+        on_pause: Callable[[bool], None] | None = None,
         timeout: int = 0,
     ) -> int:
         """Run an encode, streaming ``--json`` progress events to ``on_event``.
@@ -787,6 +841,9 @@ class HandBrakeEngine:
         )
 
         canceled = threading.Event()
+        timed_out = threading.Event()
+        control_errors: list[str] = []
+        _START_TS[proc.pid] = __import__("time").monotonic()
         tail: list[str] = []
 
         def _reader() -> None:
@@ -808,17 +865,42 @@ class HandBrakeEngine:
         reader = threading.Thread(target=_reader, name="hb-stderr", daemon=True)
         reader.start()
 
-        def _watch_cancel() -> None:
+        def _watch_control() -> None:
+            paused_at = None
+            paused_seconds = 0.0
             while proc.poll() is None:
                 if should_cancel is not None and should_cancel():
                     canceled.set()
                     _terminate(proc)
                     return
-                if timeout and _elapsed(proc) > timeout:
-                    canceled.set()
+                pause = bool(should_pause and should_pause())
+                try:
+                    if pause and paused_at is None:
+                        os.killpg(proc.pid, signal.SIGSTOP)
+                        paused_at = time.monotonic()
+                        if on_pause:
+                            on_pause(True)
+                    elif not pause and paused_at is not None:
+                        os.killpg(proc.pid, signal.SIGCONT)
+                        paused_seconds += time.monotonic() - paused_at
+                        paused_at = None
+                        if on_pause:
+                            on_pause(False)
+                except ProcessLookupError:
+                    return
+                elapsed = _elapsed(proc) - paused_seconds - (time.monotonic() - paused_at if paused_at is not None else 0)
+                if timeout and elapsed > timeout:
+                    timed_out.set()
                     _terminate(proc)
                     return
-                threading.Event().wait(0.5)
+                threading.Event().wait(0.1)
+
+        def _watch_cancel() -> None:
+            try:
+                _watch_control()
+            except Exception as exc:
+                control_errors.append(f"process control failed: {exc}")
+                _terminate(proc)
 
         watcher = threading.Thread(target=_watch_cancel, name="hb-cancel", daemon=True)
         watcher.start()
@@ -841,6 +923,10 @@ class HandBrakeEngine:
             watcher.join(timeout=1)
             _START_TS.pop(proc.pid, None)
 
+        if control_errors:
+            raise EngineError(control_errors[0])
+        if timed_out.is_set():
+            raise EngineError(f"encode timed out after {timeout} seconds")
         if canceled.is_set():
             raise EngineError("__canceled__")
         if returncode != 0:
@@ -867,6 +953,7 @@ def _terminate(proc: subprocess.Popen) -> None:
     import signal
 
     try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGCONT)
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         try:

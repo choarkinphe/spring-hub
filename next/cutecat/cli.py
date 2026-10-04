@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"recovered {recovered} interrupted job(s)", file=sys.stderr)
 
     state = AppState(config, store, engine)
-    worker = Worker(config, store, engine)
+    worker = Worker(config, store, engine, state.runtime)
     worker.start()
 
     server = build_server(state)

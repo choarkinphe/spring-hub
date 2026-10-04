@@ -115,6 +115,10 @@ def resolve_in_root(root: StorageRoot, relative: str, *, require_exists: bool = 
     """
 
     clean = normalise_relative(relative)
+    if not Path(root.path).is_dir():
+        raise PathSafetyError("storage root is unavailable")
+    if root.mount_marker and not (Path(root.path) / root.mount_marker).is_file():
+        raise PathSafetyError("storage mount marker is missing")
     root_real = Path(os.path.realpath(root.path))
     candidate = root_real / clean if clean else root_real
     candidate_real = Path(os.path.realpath(candidate))
@@ -142,6 +146,36 @@ def resolve_request(roots: list[StorageRoot], root_id: str, relative: str, *, re
 def assert_writable(target: ResolvedPath) -> None:
     if target.root.read_only:
         raise PathSafetyError(f"storage root {target.root.id!r} is read-only")
+
+
+def validate_job_paths(input_path: ResolvedPath, output_path: ResolvedPath) -> None:
+    if not input_path.is_file:
+        raise PathSafetyError("input is not a file")
+    assert_writable(output_path)
+    if not output_path.relative or output_path.is_dir:
+        raise PathSafetyError("output filename is required")
+    if input_path.absolute == output_path.absolute or (
+        output_path.exists and os.path.samefile(input_path.absolute, output_path.absolute)
+    ):
+        raise PathSafetyError("input and output must be different")
+
+
+def resolve_spec_files(spec, roots: list[StorageRoot], input_root: str) -> dict[str, str]:
+    """Auxiliary files are relative to the input storage root, never the CWD."""
+
+    files = {}
+    for flag, relative in (
+        ("--srt-file", spec.subtitles.srt_file),
+        ("--markers", spec.chapters.marker_file),
+    ):
+        if relative:
+            resolved = resolve_request(roots, input_root, relative, require_exists=True)
+            if not resolved.is_file:
+                raise PathSafetyError(f"{flag} is not a file")
+            if flag == "--srt-file" and "," in str(resolved.absolute):
+                raise PathSafetyError("SRT paths cannot contain commas")
+            files[flag] = str(resolved.absolute)
+    return files
 
 
 def check_preset_path_field(field_name: str, value: object) -> str | None:
