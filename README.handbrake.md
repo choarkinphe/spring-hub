@@ -1,10 +1,11 @@
 # Cute Cat — HandBrake edition
 
-A self-hosted web workbench that drives the **real HandBrakeCLI**. It is a
-ground-up rewrite alongside the legacy Rust/FFmpeg service, which is left
-untouched. Everything new lives under `next/` plus three new root files:
+A self-hosted web workbench that drives the **real HandBrakeCLI**. This is the
+only supported implementation: the legacy Rust/FFmpeg service, web pages and
+deployment entrypoints have been removed. Source and native web UI live under
+`next/`, with deployment files at the root:
 
-| New file | Purpose |
+| File | Purpose |
 |---|---|
 | `next/` | The service (pure Python stdlib) and native web UI |
 | `Dockerfile.handbrake` | Image with the real engine |
@@ -13,8 +14,9 @@ untouched. Everything new lives under `next/` plus three new root files:
 | `.env.handbrake.example` | Compose environment template |
 | `README.handbrake.md` | This document |
 
-The legacy `Dockerfile`, `compose.yaml`, `src/`, `web/`, `migrations/` and
-`README.md` are **not** modified by this work.
+The default `cute-cat-preview` configuration launches this implementation at
+<http://localhost:18087>. Old databases, Docker volumes and media have not been
+deleted or migrated; do not point this service at a legacy database.
 
 ---
 

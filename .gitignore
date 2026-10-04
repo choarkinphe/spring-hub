@@ -1,5 +1,5 @@
 # --- Build output ---------------------------------------------------------
-# Rust build artifacts: ~1.7 GB, fully reproducible from Cargo.lock.
+# Retired Rust build artifacts; keep ignored if restored from Git history.
 /target/
 
 # Python bytecode caches.

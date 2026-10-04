@@ -15,10 +15,9 @@
         <p class="subtitle">HandBrake 转码工作台</p>
       </div>
     </div>
-    <div class="status-cluster"><button id="btn-open-settings" class="btn btn-small" type="button" aria-haspopup="dialog" aria-controls="settings-drawer">系统设置</button>
-      <span id="engine-status" class="pill pill-unknown" title="HandBrakeCLI 状态">引擎检测中…</span>
-      <span id="queue-status" class="pill pill-unknown">队列读取中…</span>
-    </div>
+    <button id="btn-open-settings" class="btn btn-icon" type="button" title="系统设置" aria-label="系统设置" aria-haspopup="dialog" aria-controls="settings-drawer">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9.5 3h5l.5 2.5 2 1.2 2.4-.8 2.5 4.3-1.9 1.3v1l1.9 1.3-2.5 4.3-2.4-.8-2 1.2-.5 2.5h-5L9 18.5l-2-1.2-2.4.8-2.5-4.3L4 12.5v-1l-1.9-1.3 2.5-4.3 2.4.8 2-1.2L9.5 3Z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
   </header>
 
   <div id="engine-banner" class="banner banner-warn hidden" role="alert"></div>
@@ -26,7 +25,7 @@
   <main class="layout">
     <div class="page-heading"><div><h2>系统状态与任务队列</h2><p>查看转码进度与运行状态，创建任务时再选择文件和编码设置。</p></div><button id="btn-create-task" class="btn btn-primary" type="button" aria-haspopup="dialog" aria-controls="create-task-dialog" disabled>创建任务</button></div>
     <section class="panel system-overview" aria-labelledby="system-title">
-      <div class="panel-heading"><h2 id="system-title">系统概览</h2><button id="btn-open-system" class="btn btn-small" type="button" aria-haspopup="dialog" aria-controls="system-drawer">系统详情</button></div>
+      <div class="panel-heading"><div class="system-overview-title"><h2 id="system-title">系统概览</h2><span id="engine-status" class="pill pill-unknown" title="HandBrakeCLI 状态" role="status">引擎检测中…</span></div><button id="btn-open-system" class="btn btn-small" type="button" aria-haspopup="dialog" aria-controls="system-drawer">系统详情</button></div>
       <dl id="system-summary" class="system-summary">
         <div><dt>CPU</dt><dd>读取中…</dd></div><div><dt>内存</dt><dd>读取中…</dd></div>
         <div><dt>GPU</dt><dd>读取中…</dd></div><div><dt>可用空间（最少）</dt><dd>读取中…</dd></div>

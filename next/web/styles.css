@@ -66,7 +66,10 @@ a { color: var(--accent-2); }
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo { font-size: 26px; }
 .subtitle { margin: 0; color: var(--muted); font-size: 12px; }
-.status-cluster { display: flex; gap: 8px; }
+.btn.btn-icon { display:inline-flex; align-items:center; justify-content:center; width:40px; height:40px; padding:0; flex-shrink:0; }
+.btn-icon svg { display:block; }
+.system-overview-title { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; min-width:0; }
+.system-overview .panel-heading > .btn { flex-shrink:0; }
 
 .pill {
   padding: 4px 10px; border-radius: 999px; font-size: 12px;

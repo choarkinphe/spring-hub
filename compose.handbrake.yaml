@@ -2,8 +2,8 @@
 #
 #   docker compose -f compose.handbrake.yaml up --build
 #
-# This file is intentionally separate from the legacy `compose.yaml` so the old
-# deployment is left untouched.
+# This is the project's only supported deployment. The legacy Rust/FFmpeg
+# deployment has been removed; its data is not migrated or deleted.
 #
 # Security posture:
 #   * non-root user, read-only root filesystem, all capabilities dropped;

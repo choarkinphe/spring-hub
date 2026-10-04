@@ -303,7 +303,7 @@ function settingsHarness() {
                     "sub-burn", "sub-default", "sub-forced", "sub-srt", "sub-srt-burn", "sub-srt-default", "chap-file",
                     "flt-grayscale", "flt-hflip", "flt-chroma", "flt-lapsharp", "flt-unsharp", "video-two-pass", "video-turbo", "audio-tracks",
                     "btn-validate", "btn-queue", "spec-validation", "validation-message", "validation-details", "validation-json", "output-name"]) h.control(id);
-  for (const id of ["create-message", "create-task-dialog", "file-picker-dialog", "btn-create-task", "btn-close-create", "btn-select-file", "btn-scan", "source-summary", "browser", "browser-message", "current-path", "root-select", "system-info", "system-message", "storage-status", "engine-status", "engine-banner", "queue-count", "queue-summary", "queue-message", "queue-empty", "job-list-note", "job-list", "queue-status", "detail-message", "btn-cancel", "job-log", "job-detail", "progress-label", "progress-bar", "job-drawer", "btn-close-job", "resource-message", "resource-info", "disk-status", "codec-status", "system-summary", "summary-message", "system-drawer", "btn-close-system", "btn-open-system", "detail-source", "detail-status", "detail-actions", "detail-error", "detail-spec", "task-template-select", "setting-default-template", "template-name", "template-description", "template-message", "btn-save-template", "settings-message", "btn-save-settings", "setting-concurrency", "setting-auto-start", "setting-timeout", "setting-output-root", "setting-name-template", "name-preview", "preset-current-source", "preset-current-name", "preset-hint"]) h.control(id);
+  for (const id of ["create-message", "create-task-dialog", "file-picker-dialog", "btn-create-task", "btn-close-create", "btn-select-file", "btn-scan", "source-summary", "browser", "browser-message", "current-path", "root-select", "system-info", "system-message", "storage-status", "engine-status", "engine-banner", "queue-count", "queue-summary", "queue-message", "queue-empty", "job-list-note", "job-list", "detail-message", "btn-cancel", "job-log", "job-detail", "progress-label", "progress-bar", "job-drawer", "btn-close-job", "resource-message", "resource-info", "disk-status", "codec-status", "system-summary", "summary-message", "system-drawer", "btn-close-system", "btn-open-system", "detail-source", "detail-status", "detail-actions", "detail-error", "detail-spec", "task-template-select", "setting-default-template", "template-name", "template-description", "template-message", "btn-save-template", "settings-message", "btn-save-settings", "setting-concurrency", "setting-auto-start", "setting-timeout", "setting-output-root", "setting-name-template", "name-preview", "preset-current-source", "preset-current-name", "preset-hint"]) h.control(id);
   for (const id of ["queue-filters", "queue-search", "queue-select-all", "queue-selection-note", "queue-empty-title", "queue-empty-description", "btn-clear-queue-filters", "btn-refresh-jobs", "btn-batch-start", "btn-batch-pause", "btn-batch-cancel", "btn-batch-delete"]) h.control(id);
   h.controls.get("queue-empty").hidden = true;
   h.context.renderChoice(h.controls.get("root-select"), ["media", "out"]);
@@ -577,13 +577,30 @@ test("scan responses for a replaced source are ignored", async () => {
   assert.equal(n.get("btn-scan").disabled, false);
 });
 
+test("header keeps accessible settings only and engine status belongs to system overview", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const header = html.match(/<header class="topbar">([\s\S]*?)<\/header>/)[1];
+  assert.match(header, /id="btn-open-settings"[^>]*aria-label="系统设置"/);
+  assert.match(header, /<svg[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(header, /id="engine-status"|id="queue-status"/);
+  const overview = html.match(/<section class="panel system-overview"([\s\S]*?)<\/section>/)[1];
+  assert.match(overview, /id="engine-status"/);
+  assert.doesNotMatch(html, /id="queue-status"/);
+  const {context: c, controls: n} = settingsHarness();
+  c.renderEngineStatus({available: true, version: "1.11.0", version_string: "HandBrake 1.11.0"});
+  assert.equal(n.get("engine-status").textContent, "HandBrake 1.11.0");
+  c.renderEngineStatus({available: false, notes: ["missing"]});
+  assert.equal(n.get("engine-status").textContent, "未检测到 HandBrakeCLI");
+  assert.equal(n.get("btn-queue").disabled, true);
+});
+
 test("queue totals use full-store counts, not the limited list, with recoverable errors", async () => {
   const {context: c, controls: n} = settingsHarness();
   c.loadJobDetail = async () => {};
   c.api = async () => ({jobs: [{id: "old", status: "succeeded", input: {path:"a"}, output: {path:"b"}}, {id: "active", status: "running", input: {path:"a"}, output: {path:"b"}}], counts: {succeeded: 150, queued: 8, running: 1}});
   await c.refreshJobs();
   assert.equal(n.get("queue-count").textContent, "159");
-  assert.match(n.get("queue-status").textContent, /9/);
+  assert.match(n.get("queue-summary").textContent, /排队 8 · 执行 1/);
   assert.equal(vm.runInContext('state.selectedJob', c), null);
   assert.equal(n.get("job-drawer").open, undefined);
   c.api = async () => {throw new Error("offline");};

@@ -1724,14 +1724,8 @@ async function refreshJobs() {
       $("btn-cancel").disabled = true;
     }
     renderQueue();
-    const pending = active + (counts.queued || 0) + (counts.waiting || 0) + (counts.paused || 0);
-    const queuePill = $("queue-status");
-    if (pending) { queuePill.className = "pill pill-running"; queuePill.textContent = `队列 ${pending} 个待完成`; }
-    else { queuePill.className = "pill pill-idle"; queuePill.textContent = "队列空闲"; }
   } catch (err) {
     $("queue-message").textContent = (state.jobsLoaded ? "刷新失败，保留上次队列：" : "无法读取任务队列：") + err.message;
-    $("queue-status").className = "pill pill-warn";
-    $("queue-status").textContent = "队列状态未知";
   } finally {
     state.jobsLoading = false;
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Preview the NEW HandBrake workbench (next/) without touching the legacy
-# preview. Uses a real HandBrakeCLI when present, otherwise falls back to the
+# Preview the HandBrake workbench (next/). Uses a real HandBrakeCLI when
+# present, otherwise falls back to the
 # interface mock (clearly announced) so the UI can be inspected.
 set -euo pipefail
 
