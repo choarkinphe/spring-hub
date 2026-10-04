@@ -268,6 +268,19 @@ Successful submission closes creation, selects the new job on the landing page,
 and clears source/output/validation while retaining encoding settings and the
 preset baseline for the next task. It still does not imply successful encoding.
 
+### Chinese interface and shared controls
+
+The workbench uses shared choice controls (segments, tags or dropdowns by option
+count) in both task creation and settings, with consistent focus, disabled states,
+40px fields and 32px compact buttons. Chinese labels are presentation-only:
+encoder values, preset IDs/names, paths and submitted CLI arguments stay intact.
+Official preset titles have Chinese display aliases and remain searchable by the
+original name; imported user names are never rewritten. Raw preset descriptions,
+engine diagnostics, JSON and logs remain available under explicitly labelled
+original-information sections. Capability reports include Chinese display fields
+without changing machine status values. Known errors have Chinese guidance;
+unknown upstream text is preserved under the original-error report, not guessed.
+
 ### Task controls and system settings
 
 Task rows and the redesigned detail drawer expose actions permitted by the
@@ -289,22 +302,58 @@ are not rebuilt, and log scroll/collapsed sections stay in place.
   must finish/cancel and release execution before deletion. Retry still refuses
   existing output under the configured no-overwrite policy.
 
-**系统设置** is a separate drawer. Its allowlisted settings are persisted in the
-next SQLite database (overriding initial TOML defaults, without rewriting TOML):
-concurrency 1–8, automatic start, encode timeout, default writable output root,
-output naming rule and default task template. Increasing concurrency enables
-new claims; reducing it lets existing work drain without termination. Timeout
-is captured for each execution. Engine paths, credentials, mount definitions,
-raw CLI and overwrite policy are not editable here.
+**设置** is a categorised drawer: general/interface, output/files, conversion/queue,
+encoding templates, completion notifications, and storage/maintenance. Service
+settings are persisted in SQLite without rewriting TOML: concurrency 1–8,
+automatic start, encode timeout, writable output root, naming rule, default task
+template and collision policy (`reject` by default, or safe numbered `rename`).
+Concurrency changes affect new claims immediately without terminating in-flight
+work. Timeout and collision policy are frozen when a new job is created; retries
+use that snapshot. Old jobs without execution settings retain compatibility.
+Engine paths, credentials, mount definitions, raw CLI and overwrite permissions
+are not editable here. New snapshot-based jobs always publish without clobbering.
+
+Browser preferences (refresh 2/5/10/30 seconds, default queue category, list
+density and success/failure/sound/system notification choices) are versioned in
+localStorage, not shared service defaults. Storage errors explicitly fall back to
+session-only preferences. Loading failures disable save, unsaved changes are
+confirmed on close/Esc/template editing, and service saves carry a revision to
+reject concurrent edits instead of silently overwriting them. Category resets
+change the draft only; saving applies them, without deleting templates or jobs.
+
+Completion notifications consume ordered `/job-events`, independent of the recent
+100-job list. Initial load starts at the current cursor (no history replay),
+subsequent polls page through terminal transitions and retries. Sound requires a
+user gesture and system notifications require secure-context/browser permission;
+permission is only requested by a clicked button. Notifications work while this
+page is running, **not** as background push after closing it. Multiple tabs use
+Web Locks and bounded local dedup history when available; BroadcastChannel-only
+fallback is best effort. No shutdown, host driver install or source deletion action.
+
+Maintenance previews terminal records older than 7/30/90 days, then issues a
+single-use five-minute confirmation token. Cleanup rechecks the original records
+under the Store lock and deletes only inactive terminal records/logs; newly
+appearing or retried jobs are skipped. It never deletes media, templates, presets,
+settings or deployment files, and does not promise immediate SQLite file shrinkage.
 
 Output naming supports `{source}`, `{encoder}`, `{preset}`, `{ext}` in a relative
 path. Substitutions are sanitized path components; unknown placeholders,
 absolute paths and traversal are rejected. Name preview and creation defaults
 share backend expansion. Manual filename edits are preserved, stale naming
 responses ignored, and name collisions never trigger automatic overwrite.
+Automatic numbering considers existing files, directories, dangling links and
+pending job reservations in a Store transaction (up to 1000 candidates). Source
+aliases remain rejected. Publication uses atomic hard-link creation and retries
+only destination-exists races in rename mode, updating the actual job path under
+the cancellation/publication lock. Deployment must support same-filesystem links.
 
 Encoding task templates have stable UUIDs and can be saved from current encoding
-controls, applied/edited/deleted and selected as the default in settings. They
+controls, applied/edited/copied/deleted and selected as the default in settings.
+Version-1 JSON bundles export/import templates with their preset dependencies;
+server-local IDs are rebuilt, imports are all-or-nothing and never overwrite
+existing templates or change the default selection. Bundles reject arbitrary argv,
+unknown fields, unsafe preset paths and unsupported versions, with 100-template
+and request-size bounds. They
 retain the controlled form and preset baseline so unchanged defaults do not
 become preset overrides; no source/output reference is stored. These are distinct
 from official/imported HandBrake presets. New jobs resolve and freeze presets
@@ -514,7 +563,13 @@ POST /api/v1/jobs/<id>/cancel
 POST /api/v1/jobs/<id>/start | /pause
 DELETE /api/v1/jobs/<id>             record/logs only, never media
 GET  /api/v1/jobs/<id>/logs
-GET|POST /api/v1/settings            validated persistent runtime defaults
+GET|POST /api/v1/settings            validated runtime defaults + revision
+GET /api/v1/job-events?after=<id>     ordered terminal events; no after = latest cursor
+POST /api/v1/maintenance/preview     preview inactive terminal record cleanup
+POST /api/v1/maintenance/cleanup     consume preview confirmation token
+POST /api/v1/task-templates/export   portable versioned template bundle
+POST /api/v1/task-templates/import-preview
+POST /api/v1/task-templates/import
 POST /api/v1/output-name             safe naming expansion/preview
 GET|POST /api/v1/task-templates
 POST|DELETE /api/v1/task-templates/<id>

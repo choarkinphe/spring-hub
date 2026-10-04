@@ -69,6 +69,8 @@ function harness() {
     },
     Event: class { constructor(type, init = {}) { this.type = type; this.bubbles = Boolean(init.bubbles); } },
   });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../web/ui-text.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../web/settings.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8"), context);
   const control = (id = "control") => {
     const node = new Element("div");
@@ -525,7 +527,7 @@ test("creation failure stays in the modal with its draft and local error", async
   c.api = async path => { if (path === "/spec/validate") return {valid: true, args: []}; throw new Error("409 output exists"); };
   await c.queueJob();
   assert.equal(n.get("create-task-dialog").open, true);
-  assert.match(n.get("create-message").textContent, /409 output exists/);
+  assert.match(n.get("create-message").textContent, /输出位置已被占用/);
   assert.equal(n.get("output-name").value, "out.mkv");
 });
 
@@ -592,6 +594,112 @@ test("header keeps accessible settings only and engine status belongs to system 
   c.renderEngineStatus({available: false, notes: ["missing"]});
   assert.equal(n.get("engine-status").textContent, "未检测到 HandBrakeCLI");
   assert.equal(n.get("btn-queue").disabled, true);
+});
+
+function expandedSettingsHarness() {
+  const h = settingsHarness();
+  for (const id of ["settings-drawer","btn-close-settings","settings-content","settings-fields","settings-dirty","btn-reset-settings-section","setting-refresh","setting-queue-filter","setting-density","setting-notify-success","setting-notify-failure","setting-notify-sound","setting-notify-desktop","setting-collision","setting-active-slots","setting-root-note","settings-template-list","settings-storage-list","notification-permission","template-transfer-message","cleanup-message","btn-confirm-cleanup","template-import-file"]) h.control(id);
+  for (const [id, options] of Object.entries({"setting-refresh":["2","5","10","30"],"setting-queue-filter":["all","pending","active","paused","completed","issues","canceled"],"setting-density":["standard","compact"],"setting-collision":["reject","rename"],"cleanup-days":["7","30","90"]})) h.context.renderChoice(h.controls.get(id) || h.control(id),options);
+  h.controls.get("settings-fields").checkValidity = () => true;
+  const storage = new Map();
+  h.context.localStorage = {getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)};
+  h.context.window = {isSecureContext:false};
+  h.context.confirm = () => false;
+  h.context.startPolling = () => {};
+  h.context.renderQueue = () => {};
+  vm.runInContext('state.roots=[{id:"out",label:"Out",path:"/out",read_only:false,available:true}]',h.context);
+  h.context.api = async route => route === "/settings" ? {values:{max_concurrent_jobs:1,auto_start:true,job_timeout_seconds:0,default_output_root:"out",output_name_template:"{source}.{ext}",default_task_template_id:null,output_collision_policy:"reject"},defaults:{max_concurrent_jobs:1,auto_start:true,job_timeout_seconds:0,default_output_root:"out",output_name_template:"{source}.{ext}",default_task_template_id:null,output_collision_policy:"reject"},revision:0,active_slots:0} : route === "/task-templates" ? {templates:[]} : {path:"movie.mp4"};
+  return {...h,storage};
+}
+
+test("categorised settings load failure disables save and late response cannot reopen", async () => {
+  const {context:c,controls:n}=expandedSettingsHarness();
+  c.api=async()=>{throw new Error("offline");};
+  await c.Settings.open();
+  assert.equal(n.get("settings-fields").disabled,true);
+  assert.equal(n.get("btn-save-settings").disabled,true);
+  assert.match(n.get("settings-message").textContent,/无法连接服务/);
+  let finish;
+  c.api=()=>new Promise(resolve=>{finish=resolve;});
+  const pending=c.Settings.open();
+  c.Settings.close();
+  finish({values:{}});
+  await pending;
+  assert.equal(n.get("settings-drawer").open,false);
+  assert.equal(n.get("settings-fields").disabled,true);
+});
+
+test("settings dirty close, save conflict and scoped reset preserve drafts", async () => {
+  const {context:c,controls:n}=expandedSettingsHarness();
+  await c.Settings.open();
+  assert.match(n.get("settings-message").textContent,/服务配置/);
+  c.setChoiceValue(n.get("setting-refresh"),"10");
+  assert.equal(c.Settings.dirty(),true);
+  assert.equal(c.Settings.canClose(),false);
+  c.api=async()=>{throw new Error("409 revision conflict");};
+  await c.Settings.save();
+  assert.equal(c.Settings.dirty(),true);
+  assert.match(n.get("settings-message").textContent,/原始错误|冲突/);
+  c.Settings.selectSection("general");
+  c.Settings.resetSection();
+  assert.equal(c.choiceValue(n.get("setting-refresh")),"2");
+  assert.equal(c.Settings.dirty(),false);
+  n.get("setting-timeout").value="99";
+  c.Settings.selectSection("output");c.Settings.resetSection();
+  assert.equal(n.get("setting-timeout").value,"99");
+});
+
+test("settings saves service revision before browser preferences", async () => {
+  const {context:c,controls:n,storage}=expandedSettingsHarness();
+  await c.Settings.open();
+  c.setChoiceValue(n.get("setting-refresh"),"5");
+  let posted;
+  c.api=async(route,opts)=>{posted=JSON.parse(opts.body);return {values:posted,revision:1,defaults:{},active_slots:0};};
+  await c.Settings.save();
+  assert.equal(posted.expected_revision,0);
+  assert.equal(c.Settings.refreshSeconds(),5);
+  assert.equal(JSON.parse(storage.get("cute-cat.preferences.v1")).refresh,5);
+  assert.equal(c.Settings.dirty(),false);
+});
+
+test("completion polling starts at latest, advances cursor and does not replay duplicates", async () => {
+  const {context:c,controls:n}=expandedSettingsHarness();
+  const notices=n.has("completion-notices")?n.get("completion-notices"):new Element("div");n.set("completion-notices",notices);
+  c.location={origin:"http://localhost:18087"};c.navigator={};c.setTimeout=()=>1;
+  let initial=true, cursorQueries=[];
+  c.api=async route=>{
+    cursorQueries.push(route);
+    if(initial){initial=false;return {events:[],cursor:10,has_more:false};}
+    return {events:[{id:11,job_id:"a",status:"succeeded",source:"safe.mp4"}],cursor:11,has_more:false};
+  };
+  await c.Settings.pollEvents();
+  assert.equal(notices.children.length,0);
+  await c.Settings.pollEvents();
+  assert.equal(notices.children.length,1);
+  await c.Settings.pollEvents();
+  assert.equal(notices.children.length,1);
+  assert.match(cursorQueries[1],/after=10/);
+  c.api=async()=>{throw new Error("offline");};
+  await c.Settings.pollEvents();
+  assert.equal(notices.children.length,1);
+});
+
+test("browser settings reject invalid preferences and six settings categories exist", () => {
+  const {context:c} = settingsHarness();
+  const prefs = c.Settings.validPrefs({refresh:1,filter:"arbitrary",density:"huge",sound:"yes",desktop:true});
+  assert.equal(prefs.refresh,2);
+  assert.equal(prefs.filter,"all");
+  assert.equal(prefs.sound,false);
+  assert.equal(prefs.desktop,true);
+  const valid = c.Settings.validPrefs({refresh:10,filter:"completed",density:"compact",sound:true});
+  assert.equal(valid.refresh,10);
+  assert.equal(valid.filter,"completed");
+  const html=fs.readFileSync(path.join(__dirname,"../web/index.html"),"utf8");
+  assert.equal((html.match(/data-settings-panel=/g)||[]).length,6);
+  assert.match(html,/id="settings-fields" disabled/);
+  assert.match(html,/id="setting-collision"/);
+  assert.match(html,/id="btn-confirm-cleanup"[^>]*disabled/);
+  assert.match(html,/settings\.js/);
 });
 
 test("queue totals use full-store counts, not the limited list, with recoverable errors", async () => {
@@ -677,7 +785,7 @@ test("cancel failure remains visible in drawer and duplicate clicks are ignored"
   fail(new Error("409 cannot cancel"));
   await pending;
   assert.deepEqual(calls,["/jobs/id/cancel"]);
-  assert.match(n.get("detail-message").textContent,/409 cannot cancel/);
+  assert.match(n.get("detail-message").textContent,/原始错误|冲突/);
   assert.equal(n.get("btn-cancel").disabled,false);
 });
 
@@ -796,7 +904,7 @@ test("queue progress clamps invalid values and preserves zero speed / ETA", () =
   assert.equal(h.context.formatDuration(null), "—");
   const job = {...queueJobFixture("movie", "running"), progress: .45, speed: "0", eta_seconds: 0};
   const row = h.context.renderQueueJob(job);
-  assert.match(row.querySelector(".queue-job-timing").textContent, /0 fps.*剩余 0 秒/);
+  assert.match(row.querySelector(".queue-job-timing").textContent, /0 帧\/秒.*剩余 0 秒/);
   assert.equal(row.querySelector(".queue-progress-track").attributes["aria-valuenow"], "45");
   assert.equal(row.querySelector(".queue-progress-fill").style.width, "45%");
 });
@@ -857,6 +965,25 @@ test("queue refresh removes disappeared selections but preserves batch feedback"
   await h.context.refreshJobs();
   assert.equal(vm.runInContext('state.checkedJobs.size', h.context), 1);
   assert.match(h.controls.get("queue-message").textContent, /批量操作完成/);
+});
+
+test("Chinese labels preserve original values, official names and user content", () => {
+  const {context:c,control} = harness();
+  const speed=control("speed");c.renderChoice(speed,["ultrafast","medium","veryslow"],{value:"medium"});
+  assert.equal(c.choiceValue(speed),"medium");
+  assert.match(speed.children[1].textContent || speed.children[1].children[1].textContent,/均衡/);
+  c.setChoiceValue(speed,"ultrafast");assert.equal(c.choiceValue(speed),"ultrafast");
+  const official=c.UI.preset({name:"General/Fast 1080p30",description:"A useful fast preset"},"official");
+  assert.match(official.name,/快速/);assert.equal(official.original,"General/Fast 1080p30");
+  assert.equal(official.rawDescription,"A useful fast preset");
+  const custom=c.UI.preset({name:"My Fast Template",description:"My personal text"},"imported");
+  assert.equal(custom.name,"My Fast Template");assert.equal(custom.description,"My personal text");
+  assert.match(c.UI.error("output already exists"),/输出位置已被占用/);
+  assert.match(c.UI.error("unknown upstream failure"),/原始错误/);
+  assert.equal(c.UI.raw({rawMessage:"unchanged diagnostic"}),"unchanged diagnostic");
+  assert.equal(c.UI.status.verified,"已验证");
+  const html=fs.readFileSync(path.join(__dirname,"../web/index.html"),"utf8");
+  assert.doesNotMatch(html,/>Tune<|>Level<|Chroma Smooth|placeholder="auto"/);
 });
 
 test("numeric choice reads zero/empty without losing semantics", () => {

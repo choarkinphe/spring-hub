@@ -59,29 +59,71 @@
   </main>
   <footer class="footer"><span>功能矩阵见 <a href="#" id="link-matrix">能力报告</a>。</span><span id="version-tag"></span></footer>
 
-  <dialog id="settings-drawer" class="preset-drawer" aria-labelledby="settings-title">
-    <header class="preset-drawer-header"><h2 id="settings-title">系统设置</h2><button id="btn-close-settings" class="btn" type="button">关闭</button></header>
-    <div class="preset-results">
-      <section class="system-section"><h3>任务调度</h3>
-        <label class="field"><span>并发任务数（1–8）</span><input id="setting-concurrency" type="number" min="1" max="8" step="1" /></label>
-        <label class="check"><input id="setting-auto-start" type="checkbox" /> 新任务自动启动</label>
-        <label class="field"><span>编码超时秒数（0 不限）</span><input id="setting-timeout" type="number" min="0" max="86400" step="1" /></label>
-        <p class="hint">降低并发不会中断正在执行的任务；暂停进程仍占并发名额。恢复原地继续，服务重启后需重新编码。</p>
-      </section>
-      <section class="system-section"><h3>输出默认值</h3>
-        <label class="field"><span>默认输出存储根</span><select id="setting-output-root"></select></label>
-        <label class="field"><span>输出命名模板</span><input id="setting-name-template" type="text" maxlength="240" /></label>
-        <p class="hint">允许 {source}、{encoder}、{preset}、{ext}；例如 converted/{source}-{encoder}.{ext}。相对路径，不自动覆盖同名输出。</p>
-        <button id="btn-name-preview" class="btn btn-small" type="button">预览命名</button><p id="name-preview" class="hint"></p>
-      </section>
-      <section class="system-section"><div class="panel-heading"><h3>编码任务模板</h3><button id="btn-new-template" class="btn btn-small" type="button">新建模板</button></div>
-        <label class="field"><span>默认任务模板</span><select id="setting-default-template"></select></label>
-        <div id="settings-template-list"></div>
-      </section>
-      <p id="settings-message" class="hint" role="status"></p>
+  <dialog id="settings-drawer" class="preset-drawer settings-drawer" aria-labelledby="settings-title">
+    <header class="preset-drawer-header"><div><h2 id="settings-title">设置</h2><p>按你的工作方式安排转换、输出和提醒。</p></div><button id="btn-close-settings" class="btn" type="button">关闭</button></header>
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分类">
+        <button type="button" data-settings-section="general" class="active" aria-current="page">常规与界面</button>
+        <button type="button" data-settings-section="output">输出与文件</button>
+        <button type="button" data-settings-section="queue">转换与队列</button>
+        <button type="button" data-settings-section="templates">编码默认值与模板</button>
+        <button type="button" data-settings-section="notifications">完成通知</button>
+        <button type="button" data-settings-section="maintenance">存储与维护</button>
+      </nav>
+      <div class="settings-content" id="settings-content" aria-busy="false">
+        <fieldset id="settings-fields" disabled>
+          <section data-settings-panel="general" class="settings-section">
+            <h3>常规与界面</h3><p class="settings-scope">仅此浏览器 · 保存后立即生效</p>
+            <label class="field"><span>队列刷新频率</span><select id="setting-refresh"><option value="2">每 2 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option><option value="30">每 30 秒</option></select></label>
+            <label class="field"><span>默认队列分类</span><select id="setting-queue-filter"><option value="all">全部</option><option value="pending">待处理</option><option value="active">执行中</option><option value="paused">已暂停</option><option value="completed">已完成</option><option value="issues">失败 / 中断</option><option value="canceled">已取消</option></select></label>
+            <label class="field"><span>任务列表密度</span><select id="setting-density"><option value="standard">标准</option><option value="compact">紧凑</option></select></label>
+            <p class="hint">界面偏好保存在当前浏览器，不改变其他设备或已创建任务。</p>
+          </section>
+          <section data-settings-panel="output" class="settings-section" hidden>
+            <h3>输出与文件</h3><p class="settings-scope">当前服务 · 用于新任务，不改已排队任务</p>
+            <label class="field"><span>默认输出位置</span><select id="setting-output-root"></select></label><p id="setting-root-note" class="hint"></p>
+            <label class="field"><span>输出命名模板</span><input id="setting-name-template" type="text" maxlength="240" /></label>
+            <div class="settings-tokens" aria-label="插入命名占位符"><button class="btn btn-small" type="button" data-name-token="{source}">源文件名</button><button class="btn btn-small" type="button" data-name-token="{encoder}">编码器</button><button class="btn btn-small" type="button" data-name-token="{preset}">预设</button><button class="btn btn-small" type="button" data-name-token="{ext}">扩展名</button></div>
+            <p class="hint">仅存储根内相对路径。例如 converted/{source}-{encoder}.{ext}。</p>
+            <button id="btn-name-preview" class="btn btn-small" type="button">预览命名</button><p id="name-preview" class="settings-example" role="status"></p>
+            <label class="field"><span>同名文件处理</span><select id="setting-collision"><option value="reject">拒绝创建（默认）</option><option value="rename">自动编号：文件名 (1).扩展名</option></select></label>
+            <p class="settings-safety">始终保护源文件；新任务不会覆盖已有输出。同名策略由后端分配，并在发布时再次检查。</p>
+          </section>
+          <section data-settings-panel="queue" class="settings-section" hidden>
+            <h3>转换与队列</h3><p class="settings-scope">当前服务 · 并发立即生效，其余用于新任务</p>
+            <label class="field"><span>同时转换任务数（1–8）</span><input id="setting-concurrency" type="number" min="1" max="8" step="1" /></label><p id="setting-active-slots" class="hint"></p>
+            <label class="check"><input id="setting-auto-start" type="checkbox" /> 新任务自动启动</label>
+            <label class="field"><span>单任务编码超时（秒，0 为不限）</span><input id="setting-timeout" type="number" min="0" max="86400" step="1" /></label>
+            <p class="hint">降低并发不会中断在途任务。暂停进程仍占名额；继续在原进程恢复，服务重启后需重新编码。超时不计暂停时间。</p>
+          </section>
+          <section data-settings-panel="templates" class="settings-section" hidden>
+            <h3>编码默认值与模板</h3><p class="settings-scope">当前服务 · 模板只影响新建任务</p>
+            <label class="field"><span>默认任务模板</span><select id="setting-default-template"></select></label>
+            <div class="actions"><button id="btn-new-template" class="btn" type="button">新建模板</button><button id="btn-export-templates" class="btn" type="button">导出全部</button><button id="btn-import-templates" class="btn" type="button">导入 JSON</button><input id="template-import-file" type="file" accept="application/json,.json" hidden /></div>
+            <p class="hint">通过七标签编辑编码参数；模板不包含源文件、输出路径或凭据。导入会生成新身份，不覆盖现有模板。</p>
+            <p id="template-transfer-message" class="hint" role="status"></p><div id="settings-template-list"></div>
+          </section>
+          <section data-settings-panel="notifications" class="settings-section" hidden>
+            <h3>完成通知</h3><p class="settings-scope">仅此浏览器 · 页面打开期间有效</p>
+            <label class="check"><input id="setting-notify-success" type="checkbox" /> 转换成功时提醒</label><label class="check"><input id="setting-notify-failure" type="checkbox" /> 转换失败 / 中断时提醒</label>
+            <label class="check"><input id="setting-notify-sound" type="checkbox" /> 播放提示音</label><label class="check"><input id="setting-notify-desktop" type="checkbox" /> 使用浏览器系统通知</label>
+            <div class="actions"><button id="btn-notification-permission" type="button" class="btn">允许系统通知</button><button id="btn-test-notification" type="button" class="btn">测试提醒</button><button id="btn-test-sound" type="button" class="btn">测试声音</button></div>
+            <p id="notification-permission" class="hint" role="status"></p><p class="hint">首次打开不重复提醒旧任务；关闭页面后不会推送。声音可能受自动播放限制，通知需要安全地址和浏览器授权。</p>
+          </section>
+          <section data-settings-panel="maintenance" class="settings-section" hidden>
+            <h3>存储与维护</h3><p class="settings-scope">当前服务 · 手动操作，需确认</p>
+            <h4>已配置存储位置</h4><div id="settings-storage-list"></div><p class="hint">存储根由部署配置管理；本页不新增系统路径、不挂载网络共享、不安装驱动。</p>
+            <h4>清理历史记录</h4><label class="field"><span>记录早于</span><select id="cleanup-days"><option value="7">7 天</option><option value="30" selected>30 天</option><option value="90">90 天</option></select></label>
+            <div class="settings-cleanup-statuses"><label class="check"><input type="checkbox" data-cleanup-status="succeeded" checked /> 已完成</label><label class="check"><input type="checkbox" data-cleanup-status="canceled" checked /> 已取消</label><label class="check"><input type="checkbox" data-cleanup-status="failed" /> 失败</label><label class="check"><input type="checkbox" data-cleanup-status="interrupted" /> 已中断</label></div>
+            <div class="actions"><button id="btn-preview-cleanup" type="button" class="btn">预览清理数量</button><button id="btn-confirm-cleanup" type="button" class="btn btn-danger" disabled>确认清理</button></div><p id="cleanup-message" class="hint" role="status"></p>
+            <p class="settings-safety">仅删除已结束任务的记录与日志，不删除任何媒体、模板或预设。运行、等待、排队和暂停任务不清理。</p>
+          </section>
+        </fieldset>
+      </div>
     </div>
-    <footer class="dialog-actions"><button id="btn-save-settings" class="btn btn-primary" type="button">保存设置</button><p class="hint">保存在当前服务数据库中；不会重写部署文件。</p></footer>
+    <footer class="settings-footer"><div><p id="settings-message" class="hint" role="status">正在读取设置…</p><p id="settings-dirty" class="hint"></p></div><div class="actions"><button id="btn-reset-settings-section" type="button" class="btn" disabled>恢复本类默认</button><button id="btn-save-settings" class="btn btn-primary" type="button" disabled>保存设置</button></div></footer>
   </dialog>
+  <div id="completion-notices" class="completion-notices" role="status" aria-live="polite"></div>
 
   <dialog id="system-drawer" class="preset-drawer system-drawer" aria-labelledby="system-drawer-title">
     <header class="preset-drawer-header"><div><h2 id="system-drawer-title">系统详情</h2><p>设备、存储与编解码器检测信息</p></div><button id="btn-close-system" class="btn" type="button">关闭</button></header>
@@ -91,6 +133,8 @@
         <dl id="system-info" class="system-info"></dl>
         <dl id="resource-info" class="system-info resource-info"></dl>
         <details class="status-explanation"><summary>数据来源与采样说明</summary><p id="system-message" class="hint" role="status">正在读取系统状态…</p><p id="resource-message" class="hint" role="status">资源读取中…</p></details>
+        <details class="raw-info"><summary>查看引擎原始诊断</summary><pre id="engine-raw-notes" class="log"></pre></details>
+        <details id="ui-error-details" class="raw-info" hidden><summary>查看最近操作的原始错误</summary><pre id="ui-error-list" class="log"></pre></details>
       </section>
       <section class="system-section" aria-labelledby="storage-title">
         <h3 id="storage-title">存储</h3><div id="disk-status"></div><div id="storage-status" class="storage-status"></div>
@@ -127,7 +171,7 @@
       <section class="panel">
         <h2>源文件</h2>
         <label class="field">
-          <span>存储根</span>
+          <span>存储位置</span>
           <select id="root-select"></select>
         </label>
         <div id="browser" class="browser" aria-label="文件浏览"></div>
@@ -181,7 +225,7 @@
             <input id="output-name" type="text" placeholder="converted/movie.mp4" />
           </label>
           <label class="field">
-            <span>输出存储根</span>
+            <span>输出存储位置</span>
             <select id="output-root-select"></select>
           </label>
         </div>
@@ -190,8 +234,8 @@
         <div class="tab-panel" data-panel="dimensions">
           <h3>尺寸</h3>
           <div class="grid-2">
-            <label class="field"><span>宽度 (-w)</span><input id="dim-width" type="number" min="16" max="8192" step="1" placeholder="auto" /></label>
-            <label class="field"><span>高度 (-l)</span><input id="dim-height" type="number" min="16" max="8192" step="1" placeholder="auto" /></label>
+            <label class="field"><span>宽度（像素）</span><input id="dim-width" type="number" min="16" max="8192" step="1" placeholder="自动" /></label>
+            <label class="field"><span>高度（像素）</span><input id="dim-height" type="number" min="16" max="8192" step="1" placeholder="自动" /></label>
           </div>
           <label class="field"><span>裁剪模式</span>
             <select id="dim-crop-mode">
@@ -206,14 +250,14 @@
             <label class="field"><span>左</span><input id="crop-left" type="number" min="0" max="4096" step="1" /></label>
             <label class="field"><span>右</span><input id="crop-right" type="number" min="0" max="4096" step="1" /></label>
           </div>
-          <label class="field"><span>变形 (Anamorphic)</span>
+          <label class="field"><span>像素宽高比</span>
             <select id="dim-anamorphic">
               <option value="auto">自动</option>
               <option value="none">关闭</option>
               <option value="loose">宽松</option>
             </select>
           </label>
-          <label class="field"><span>尺寸对齐倍数（Modulus）</span>
+          <label class="field"><span>尺寸对齐倍数</span>
             <select id="dim-modulus">
               <option value="">默认</option>
               <option value="2">2</option>
@@ -228,7 +272,7 @@
         <!-- Filters -->
         <div class="tab-panel" data-panel="filters">
           <h3>滤镜</h3>
-          <label class="field"><span>去隔行 (Deinterlace)</span>
+          <label class="field"><span>去隔行</span>
             <select id="flt-deinterlace">
               <option value="off">关闭</option>
               <option value="skip-spatial">Yadif（跳过空间检查）</option>
@@ -236,14 +280,14 @@
               <option value="bob">Bob（双倍帧率）</option>
             </select>
           </label>
-          <label class="field"><span>降噪 (Denoise)</span>
+          <label class="field"><span>降噪</span>
             <select id="flt-denoise">
               <option value="off">关闭</option>
               <option value="nlmeans">NLMeans</option>
               <option value="hqdn3d">HQDN3D</option>
             </select>
           </label>
-          <label class="field"><span>反电视电影 (Detelecine)</span>
+          <label class="field"><span>还原电影帧率</span>
             <select id="flt-detelecine">
               <option value="off">关闭</option>
               <option value="default">默认</option>
@@ -260,39 +304,39 @@
           <div class="grid-2">
             <label class="check"><input id="flt-grayscale" type="checkbox" /> 灰度</label>
             <label class="check"><input id="flt-hflip" type="checkbox" /> 水平翻转</label>
-            <label class="check"><input id="flt-chroma" type="checkbox" /> Chroma Smooth</label>
-            <label class="check"><input id="flt-lapsharp" type="checkbox" /> Lapsharp</label>
-            <label class="check"><input id="flt-unsharp" type="checkbox" /> Unsharp</label>
+            <label class="check"><input id="flt-chroma" type="checkbox" /> 色度平滑</label>
+            <label class="check"><input id="flt-lapsharp" type="checkbox" /> 拉普拉斯锐化</label>
+            <label class="check"><input id="flt-unsharp" type="checkbox" /> 非锐化掩模</label>
           </div>
         </div>
 
         <!-- Video -->
         <div class="tab-panel" data-panel="video">
           <h3>视频</h3>
-          <label class="field"><span>编码器 (-e)</span>
+          <label class="field"><span>视频编码器</span>
             <select id="video-encoder"></select>
           </label>
           <label class="field"><span>质量类型</span>
             <select id="video-quality-type"></select>
           </label>
           <div class="grid-2">
-            <label class="field"><span>质量 / RF (-q)</span><input id="video-quality" type="number" step="0.5" min="0" max="63" value="22" /></label>
-            <label class="field"><span>码率 kbps (-b)</span><input id="video-bitrate" type="number" min="1" max="500000" step="1" placeholder="码率模式必填" /></label>
+            <label class="field"><span>质量（RF）</span><input id="video-quality" type="number" step="0.5" min="0" max="63" value="22" /></label>
+            <label class="field"><span>码率（kbps）</span><input id="video-bitrate" type="number" min="1" max="500000" step="1" placeholder="码率模式必填" /></label>
           </div>
-          <p class="hint">两遍仅用于码率模式，Turbo 仅用于两遍。无损仅支持 x264/x265 编码器模式，不保证源像素全流程无损。</p>
-          <p class="hint">预设、Tune、Profile、Level 为协议选项，并非逐编码器能力探测；预校验不证明所有组合可编码。任务预设未修改的控件不会覆盖继承值。</p>
+          <p class="hint">两遍仅用于码率模式，快速首遍仅用于两遍。无损仅支持 x264/x265 编码器模式，不保证源像素全流程无损。</p>
+          <p class="hint">编码速度、画面调优、编码档次、编码级别为协议选项，并非逐编码器能力探测；预校验不证明所有组合可编码。任务预设未修改的控件不会覆盖继承值。</p>
           <div class="grid-2">
-            <label class="field"><span>编码器预设</span><select id="video-preset"></select></label>
-            <label class="field"><span>Tune</span><select id="video-tune"></select></label>
-          </div>
-          <div class="grid-2">
-            <label class="field"><span>编码配置（Profile）</span><select id="video-profile"></select></label>
-            <label class="field"><span>Level</span><select id="video-level"></select></label>
+            <label class="field"><span>编码速度</span><select id="video-preset"></select></label>
+            <label class="field"><span>画面调优</span><select id="video-tune"></select></label>
           </div>
           <div class="grid-2">
-            <label class="field"><span>帧率 (-r)</span><select id="video-framerate"></select></label>
+            <label class="field"><span>编码档次</span><select id="video-profile"></select></label>
+            <label class="field"><span>编码级别</span><select id="video-level"></select></label>
+          </div>
+          <div class="grid-2">
+            <label class="field"><span>帧率（帧/秒）</span><select id="video-framerate"></select></label>
             <label class="check"><input id="video-two-pass" type="checkbox" /> 两遍编码</label>
-            <label class="check"><input id="video-turbo" type="checkbox" /> Turbo 首遍</label>
+            <label class="check"><input id="video-turbo" type="checkbox" /> 快速首遍</label>
           </div>
         </div>
 
@@ -307,7 +351,7 @@
         <div class="tab-panel" data-panel="subtitles">
           <h3>字幕</h3>
           <p class="hint">当前界面选择首条源字幕或外语搜索；所选列表序号为 1。源字幕与外挂 SRT 最多各占同一个烧录/默认位置，不能双重指定。预校验不检查源轨是否存在。</p>
-          <label class="field"><span>行为 (--subtitle)</span>
+          <label class="field"><span>字幕处理</span>
             <select id="sub-behavior"></select>
           </label>
           <label class="field"><span>源字幕烧录序号（所选列表，从 1 起）</span><input id="sub-burn" type="number" min="1" placeholder="无" /></label>
@@ -340,8 +384,8 @@
 
       <section id="spec-validation" class="validation-result" hidden aria-label="参数预校验结果">
         <strong id="validation-message" role="status" aria-live="polite"></strong>
-        <p class="hint">仅校验参数结构、预设解析和 CLI 映射；不检查路径/附属文件是否存在、源轨、硬件准入或实际编码。不创建任务。加入队列仍会完整复验。</p>
-        <details id="validation-details" hidden><summary>查看提交参数与 CLI 参数数组</summary><pre id="validation-json"></pre></details>
+        <p class="hint">仅校验参数结构、预设解析和命令行映射；不检查路径/附属文件是否存在、源轨、硬件准入或实际编码。不创建任务。加入队列仍会完整复验。</p>
+        <details id="validation-details" hidden><summary>查看原始提交参数与命令行参数</summary><pre id="validation-json"></pre></details>
       </section>
     </section>
     <footer class="dialog-actions">
@@ -358,7 +402,7 @@
   <dialog id="preset-drawer" class="preset-drawer" aria-labelledby="preset-drawer-title" aria-describedby="preset-drawer-help">
     <header class="preset-drawer-header">
       <div><h2 id="preset-drawer-title">选择预设</h2><p id="preset-drawer-help">按分类浏览，点击卡片选择预设。</p></div>
-      <button id="btn-close-presets" class="btn btn-ghost" type="button" aria-label="关闭预设抽屉">关闭 ✕</button>
+      <button id="btn-close-presets" class="btn" type="button" aria-label="关闭预设抽屉">关闭</button>
     </header>
     <div class="preset-toolbar">
       <div class="preset-sources" role="group" aria-label="预设来源">
@@ -379,7 +423,7 @@
   <dialog id="encoder-drawer" class="preset-drawer encoder-drawer" aria-labelledby="encoder-drawer-title" aria-describedby="encoder-drawer-help">
     <header class="preset-drawer-header">
       <div><h2 id="encoder-drawer-title">选择编码器</h2><p id="encoder-drawer-help">查看编码方式与当前环境状态，再选择编码器。</p></div>
-      <button id="btn-close-encoders" class="btn btn-ghost" type="button" aria-label="关闭编码器抽屉">关闭 ✕</button>
+      <button id="btn-close-encoders" class="btn" type="button" aria-label="关闭编码器抽屉">关闭</button>
     </header>
     <div class="preset-toolbar">
       <div class="preset-search-row">
@@ -394,12 +438,13 @@
     <footer class="preset-drawer-footer"><span id="encoder-result-count" role="status" aria-live="polite"></span><span>选用后返回设置 · Esc 关闭</span></footer>
   </dialog>
 
-  <dialog id="matrix-dialog">
-    <h3>功能矩阵</h3>
-    <table id="matrix-table"><thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead><tbody></tbody></table>
-    <button class="btn" id="btn-close-matrix" type="button">关闭</button>
+  <dialog id="matrix-dialog" class="task-dialog" aria-labelledby="matrix-title">
+    <header class="dialog-heading"><div><h2 id="matrix-title">能力报告</h2><p>已实现与已验证分开报告，实际兼容性以任务结果为准。</p></div><button class="btn" id="btn-close-matrix" type="button">关闭</button></header>
+    <section class="dialog-body"><table id="matrix-table"><thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead><tbody></tbody></table></section>
   </dialog>
 
+  <script src="/assets/ui-text.js"></script>
+  <script src="/assets/settings.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

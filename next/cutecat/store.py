@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 JOB_STATUSES = {
     "waiting", "paused", "queued", "probing", "running", "finalizing",
@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS task_templates (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
     payload_json TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS output_reservations (
+    absolute_path TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS job_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL,
+    status TEXT NOT NULL, payload_json TEXT NOT NULL, ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -157,6 +166,10 @@ class Job:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
+        if self.execution and self.execution.get("settings"):
+            requested = self.execution["settings"].get("requested_output", self.output_path)
+            data["requested_output_path"] = requested
+            data["output_renamed"] = requested != self.output_path
         if include_spec:
             data["spec"] = self.spec
         if include_args:
@@ -220,13 +233,113 @@ class Store:
             self._set_setting(key, value)
             self._conn.commit()
 
+    def set_settings(self, values: dict) -> None:
+        with self._lock:
+            for key, value in values.items():
+                self._set_setting(key, value)
+            self._conn.commit()
+
+    def pending_outputs(self, exclude=None):
+        with self._lock:
+            return [(r[0], r[1]) for r in self._conn.execute("SELECT output_root,output_path FROM jobs WHERE (status NOT IN ('succeeded','failed','canceled','interrupted') OR execution_active=1) AND id!=?", (exclude or "",))]
+
+    def create_allocated_job(self, allocator, **kwargs) -> Job:
+        """Serialize allocation, reservation and insertion in one transaction."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM output_reservations WHERE job_id NOT IN (SELECT id FROM jobs WHERE status NOT IN ('succeeded','failed','canceled','interrupted') OR execution_active=1)")
+                reserved = {row[0] for row in self._conn.execute("SELECT absolute_path FROM output_reservations")}
+                target = allocator(reserved)
+                job = self.create_job(**{**kwargs, "output_path": target.relative}, _commit=False)
+                self._conn.execute("INSERT INTO output_reservations VALUES(?,?)", (str(target.absolute), job.id))
+                self._conn.commit()
+                return job
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def publish_allocated(self, job_id, allocate, publish):
+        """Called inside complete_job's lock; commit path only after publication."""
+        job = self.get_job(job_id)
+        reserved = {row[0] for row in self._conn.execute("SELECT absolute_path FROM output_reservations WHERE job_id!=?", (job_id,))}
+        target = allocate(reserved)
+        publish(target)
+        self._conn.execute("DELETE FROM output_reservations WHERE job_id=?", (job_id,))
+        self._conn.execute("INSERT INTO output_reservations VALUES(?,?)", (str(target.absolute), job_id))
+        self._conn.execute("UPDATE jobs SET output_path=? WHERE id=?", (target.relative, job_id))
+        return target
+
+    def event_report(self, after=None, limit=100):
+        with self._lock:
+            latest = self._conn.execute("SELECT COALESCE(MAX(id),0) FROM job_events").fetchone()[0]
+            if after is None:
+                return {"events": [], "cursor": latest, "has_more": False}
+            rows = self._conn.execute("SELECT * FROM job_events WHERE id>? ORDER BY id LIMIT ?", (after, limit + 1)).fetchall()
+            events = [{"id": row["id"], "job_id": row["job_id"], "status": row["status"], "ts": row["ts"], **json.loads(row["payload_json"])} for row in rows[:limit]]
+            return {"events": events, "cursor": events[-1]["id"] if events else after, "has_more": len(rows) > limit}
+
+    def _terminal_event(self, job_id, status):
+        job = self.get_job(job_id)
+        payload = {"source": job.input_path, "output": job.output_path} if job else {"deleted": True}
+        self._conn.execute("INSERT INTO job_events(job_id,status,payload_json,ts) VALUES(?,?,?,?)", (job_id, status, json.dumps(payload), _now()))
+
+    def cleanup_candidates(self, statuses, before, limit=1000):
+        with self._lock:
+            marks = ",".join("?" for _ in statuses)
+            rows = self._conn.execute(f"SELECT id,status,finished_at FROM jobs WHERE status IN ({marks}) AND execution_active=0 AND finished_at IS NOT NULL AND julianday(finished_at)<julianday(?) ORDER BY finished_at LIMIT ?", (*sorted(statuses), before, limit)).fetchall()
+            return [dict(row) for row in rows]
+
+    def cleanup_jobs(self, candidates, statuses, before):
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                eligible = {row["id"]: row for row in self.cleanup_candidates(statuses, before, 100000)}
+                deleted = 0
+                for candidate in candidates:
+                    identity = candidate["id"]
+                    if eligible.get(identity) != candidate:
+                        continue
+                    self._conn.execute("DELETE FROM job_logs WHERE job_id=?", (identity,))
+                    self._conn.execute("DELETE FROM output_reservations WHERE job_id=?", (identity,))
+                    self._conn.execute("UPDATE job_events SET payload_json=? WHERE job_id=?", ('{"deleted":true}', identity))
+                    deleted += self._conn.execute("DELETE FROM jobs WHERE id=?", (identity,)).rowcount
+                self._conn.commit()
+                return {"deleted": deleted, "skipped": len(candidates) - deleted}
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def save_template(self, payload: dict, identity: str | None = None) -> dict:
+        payload = {k: v for k, v in payload.items() if k != "id"}
         identity = identity or str(uuid.uuid4())
         with self._lock:
             self._conn.execute("INSERT INTO task_templates VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, payload_json=excluded.payload_json, updated_at=excluded.updated_at",
                                (identity, payload["name"], payload.get("description", ""), json.dumps(payload), _now()))
             self._conn.commit()
         return {"id": identity, **payload}
+
+    def import_template_bundle(self, prepared):
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            result = []
+            try:
+                for payload, document in prepared:
+                    payload = dict(payload)
+                    if document:
+                        preset_id = str(uuid.uuid4())
+                        self._conn.execute("INSERT INTO presets(id,name,source,category,description,root,file,doc_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (preset_id, payload["spec"]["preset"], "imported", "Task templates", "Imported template dependency", None, "bundle-" + preset_id, json.dumps(document), _now()))
+                        payload["preset_id"] = preset_id
+                    else:
+                        payload["preset_id"] = "custom"
+                    identity = str(uuid.uuid4())
+                    self._conn.execute("INSERT INTO task_templates VALUES(?,?,?,?,?)", (identity, payload["name"], payload.get("description", ""), json.dumps(payload), _now()))
+                    result.append({**payload, "id": identity})
+                self._conn.commit()
+                return result
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def list_templates(self) -> list[dict]:
         with self._lock:
@@ -242,6 +355,7 @@ class Store:
                 if settings.get("default_task_template_id") == identity:
                     settings["default_task_template_id"] = None
                     self._set_setting("runtime_settings", json.dumps(settings))
+                    self._set_setting("runtime_revision", str(int(self.get_setting("runtime_revision", "0")) + 1))
             self._conn.commit()
             return cur.rowcount > 0
 
@@ -261,6 +375,7 @@ class Store:
         args: list[str],
         execution: dict | None = None,
         auto_start: bool = True,
+        _commit: bool = True,
     ) -> Job:
         job_id = str(uuid.uuid4())
         created = _now()
@@ -276,7 +391,8 @@ class Store:
                     json.dumps(args), created, json.dumps(execution) if execution is not None else None,
                 ),
             )
-            self._conn.commit()
+            if _commit:
+                self._conn.commit()
         job = self.get_job(job_id)
         assert job is not None
         return job
@@ -370,6 +486,7 @@ class Store:
         finished = _now() if status in TERMINAL_STATUSES else None
         progress_clause = ", progress=1.0" if status == "succeeded" else ""
         with self._lock:
+            previous = self.get_job(job_id)
             self._conn.execute(
                 f"UPDATE jobs SET status=?, error=CASE WHEN ? IS NULL AND error='cancel requested' "
                 f"AND ? IN ('probing','running','finalizing') THEN error ELSE ? END, "
@@ -377,6 +494,8 @@ class Store:
                 f"{progress_clause} WHERE id=?",
                 (status, error, status, error, finished, job_id),
             )
+            if previous and previous.status != status and status in TERMINAL_STATUSES:
+                self._terminal_event(job_id, status)
             self._conn.commit()
 
     def control_job(self, job_id: str, action: str) -> bool:
@@ -396,6 +515,8 @@ class Store:
                     self._conn.execute("UPDATE jobs SET status='queued', pause_requested=0, paused_from=NULL, progress=0, speed=NULL, eta_seconds=NULL, error=NULL, started_at=NULL, finished_at=NULL WHERE id=?", (job_id,))
             elif action == "delete":
                 self._conn.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
+                self._conn.execute("DELETE FROM output_reservations WHERE job_id=?", (job_id,))
+                self._conn.execute("UPDATE job_events SET payload_json=? WHERE job_id=?", ('{"deleted":true}', job_id))
                 self._conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
             else:
                 return False
@@ -436,6 +557,7 @@ class Store:
     def finish_execution(self, job_id: str) -> None:
         with self._lock:
             self._conn.execute("UPDATE jobs SET execution_active=0, paused_from=NULL, pause_requested=0 WHERE id=?", (job_id,))
+            self._conn.execute("DELETE FROM output_reservations WHERE job_id=? AND job_id IN (SELECT id FROM jobs WHERE status IN ('succeeded','failed','canceled','interrupted'))", (job_id,))
             self._conn.commit()
 
     def request_cancel(self, job_id: str) -> bool:
@@ -454,6 +576,8 @@ class Store:
                     "UPDATE jobs SET status='canceled', finished_at=? WHERE id=?",
                     (_now(), job_id),
                 )
+                self._terminal_event(job_id, "canceled")
+                self._conn.execute("DELETE FROM output_reservations WHERE job_id=?", (job_id,))
             else:
                 # Active job: worker observes the flag and terminates the engine.
                 self._conn.execute(
@@ -470,6 +594,7 @@ class Store:
         """Mark jobs that were active at shutdown as interrupted."""
 
         with self._lock:
+            interrupted = [row[0] for row in self._conn.execute("SELECT id FROM jobs WHERE status IN ('probing','running','finalizing') OR (status='paused' AND paused_from IN ('probing','running','finalizing'))")]
             cur = self._conn.execute(
                 "UPDATE jobs SET status='interrupted', "
                 "error='service restarted while this job was running', finished_at=? "
@@ -477,6 +602,9 @@ class Store:
                 (_now(),),
             )
             self._conn.execute("UPDATE jobs SET execution_active=0, pause_requested=0 WHERE execution_active=1")
+            for identity in interrupted:
+                self._terminal_event(identity, "interrupted")
+            self._conn.execute("DELETE FROM output_reservations WHERE job_id NOT IN (SELECT id FROM jobs WHERE status NOT IN ('succeeded','failed','canceled','interrupted'))")
             self._conn.commit()
             return cur.rowcount
 

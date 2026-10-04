@@ -21,6 +21,7 @@ from .pathsafe import (
 from .spec import TranscodeSpec, build_engine_args, prepare_job_preset
 from .store import Store
 from .runtime import RuntimeSettings
+from .outputs import allocate_output, pending_paths
 
 
 class Worker:
@@ -77,7 +78,9 @@ class Worker:
         if job is None or job.status in ("waiting", "succeeded", "failed", "canceled", "interrupted") or (job.status == "paused" and not job.execution_active):
             return
         self.store.add_log(job_id, "info", "job claimed")
-        timeout = self.runtime.read()["job_timeout_seconds"]
+        settings = (job.execution or {}).get("settings")
+        timeout = settings["job_timeout_seconds"] if settings else self.runtime.read()["job_timeout_seconds"]
+        refuse_overwrite = True if settings else self.config.engine.refuse_overwrite
         try:
             roots = list(self.config.storage_roots)
             input_path = resolve_request(roots, job.input_root, job.input_path, require_exists=True)
@@ -121,7 +124,7 @@ class Worker:
                         self._stop.wait(0.1)
                 try:
                     self._check_cancel(job_id)
-                    if self.config.engine.refuse_overwrite and output_path.exists:
+                    if refuse_overwrite and output_path.exists and not (settings and settings["output_collision_policy"] == "rename"):
                         raise EngineError("output already exists")
                     output_path.absolute.parent.mkdir(parents=True, exist_ok=True)
                     # Recheck after mkdir; a changed symlink must not move the staging area.
@@ -170,7 +173,24 @@ class Worker:
                             validate_job_paths(source, current)
                             if current.absolute != output_path.absolute:
                                 raise EngineError("output path changed before publication")
-                            if self.store.complete_job(job_id, lambda: self._publish(partial, current.absolute)):
+                            def publish():
+                                if not settings:
+                                    self._publish(partial, current.absolute)
+                                    return
+                                def choose(reserved):
+                                    pending = pending_paths(self.store, roots, exclude=job_id)
+                                    return allocate_output(roots, source, job.output_root, settings["requested_output"], reserved | pending, settings["output_collision_policy"])
+                                # Retry only a destination race. Other filesystem
+                                # errors must not turn into overwrites or retries.
+                                for attempt in range(1000):
+                                    try:
+                                        target = self.store.publish_allocated(job_id, choose, lambda path: os.link(partial, path.absolute))
+                                        return
+                                    except FileExistsError:
+                                        if settings["output_collision_policy"] != "rename":
+                                            raise
+                                raise EngineError("output publication collision limit reached")
+                            if self.store.complete_job(job_id, publish):
                                 break
                         self.store.add_log(job_id, "info", "encode finished")
                 finally:

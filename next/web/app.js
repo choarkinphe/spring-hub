@@ -185,7 +185,10 @@ async function api(path, options = {}) {
   try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
   if (!res.ok) {
     const message = (data && (data.error || data.detail)) || res.statusText;
-    throw new Error(`${res.status}: ${message}`);
+    const error = new Error(`${res.status}: ${message}`);
+    error.status = res.status;
+    error.rawMessage = message;
+    throw error;
   }
   return data;
 }
@@ -209,10 +212,11 @@ function fillSelect(select, items, { valueKey = "value", labelKey = "label", inc
 }
 
 const CHOICE_LABELS = {
+  ...UI.choices,
   auto: "自动", off: "关闭", none: "无", default: "默认",
   av_mp4: "MP4（av_mp4）", av_mkv: "MKV（av_mkv）", mp4: "MP4", mkv: "MKV", webm: "WebM",
   rf: "恒定质量（RF）", crf: "恒定质量（CRF）", cqp: "恒定量化（CQP）",
-  constant: "恒定质量（constant）", abr: "平均码率（ABR）", vbr: "可变码率（VBR）", lossless: "无损",
+  constant: "恒定质量", abr: "平均码率（ABR）", vbr: "可变码率（VBR）", lossless: "无损",
   fast: "快速", slow: "慢速", slower: "更慢", bob: "Bob（双倍帧率）",
   add: "添加字幕", "add-first": "添加首条", burn: "烧录", foreign: "外语搜索",
   mono: "单声道", stereo: "立体声", dpl1: "杜比环绕", dpl2: "杜比定向逻辑 II",
@@ -312,39 +316,15 @@ function renderTemplateChoices() {
 }
 
 async function openSettingsDrawer() {
-  $("settings-drawer").showModal(); syncDialogLock();
-  $("settings-message").textContent = "";
-  try {
-    await loadRuntimeSettings();
-    const settings=state.runtimeSettings;
-    $("setting-concurrency").value=settings.max_concurrent_jobs;
-    $("setting-auto-start").checked=settings.auto_start;
-    $("setting-timeout").value=settings.job_timeout_seconds;
-    $("setting-name-template").value=settings.output_name_template;
-    renderChoice($("setting-output-root"),state.roots.filter(r=>!r.read_only).map(r=>({value:r.id,label:r.label})),{value:settings.default_output_root});
-    renderSettingsTemplates();
-  } catch(err) {$("settings-message").textContent="无法读取设置："+err.message;}
-  $("btn-close-settings").focus();
+  return Settings.open();
 }
 
 async function saveRuntimeSettings() {
-  if(state.settingsSaving)return;
-  state.settingsSaving=true; $("btn-save-settings").disabled=true;
-  try {
-    const values={max_concurrent_jobs:Number($("setting-concurrency").value),auto_start:$("setting-auto-start").checked,
-      job_timeout_seconds:Number($("setting-timeout").value),default_output_root:choiceValue($("setting-output-root")),
-      output_name_template:$("setting-name-template").value,default_task_template_id:choiceValue($("setting-default-template")) || null};
-    state.runtimeSettings=(await api("/settings",{method:"POST",body:JSON.stringify(values)})).values;
-    $("settings-message").textContent="设置已保存，并发立即生效；输出默认值用于新任务。";
-  }catch(err){$("settings-message").textContent="保存失败："+err.message;}
-  finally{state.settingsSaving=false;$("btn-save-settings").disabled=false;}
+  return Settings.save();
 }
 
 async function previewOutputName() {
-  try {
-    const data=await api("/output-name",{method:"POST",body:JSON.stringify({template:$("setting-name-template").value,source:"sample.mp4",encoder:"x264",container:"mp4"})});
-    $("name-preview").textContent=data.path;
-  }catch(err){$("name-preview").textContent=err.message;}
+  return Settings.previewName();
 }
 
 async function generateOutputName() {
@@ -358,7 +338,7 @@ async function generateOutputName() {
     const data=await api("/output-name",{method:"POST",body:JSON.stringify({source,encoder:choiceValue($("video-encoder")),preset:state.presetSelection.preset?.name,container:choiceValue($("container-select"))})});
     if(request!==state.namingRequest || revision!==state.settingsRevision || source!==state.selectedFile?.path || $("output-name").value!==current)return;
     $("output-name").value=state.generatedName=data.path;
-  }catch(err){$("create-message").textContent="命名失败："+err.message;}
+  }catch(err){$("create-message").textContent="命名失败："+UI.error(err);}
 }
 
 function restoreForm(spec) {
@@ -407,28 +387,32 @@ async function saveTaskTemplate() {
     state.templateEditing=saved.id;
     await loadRuntimeSettings();
     $("template-message").textContent="模板已保存，不包含源文件与输出路径。";
-  }catch(err){$("template-message").textContent="保存失败："+err.message;}
+  }catch(err){$("template-message").textContent="保存失败："+UI.error(err);}
   finally{$("btn-save-template").disabled=false;}
 }
 
 function renderSettingsTemplates() {
   $("settings-template-list").replaceChildren();
+  if (!state.taskTemplates.length) $("settings-template-list").appendChild(el("p", {class:"ui-empty", text:"暂无任务模板。可新建模板，或导入已有模板文件。"}));
   for(const template of state.taskTemplates){
     const row=el("div",{class:"template-row"},[el("strong",{text:template.name}),el("p",{class:"hint",text:template.description||""})]);
-    row.appendChild(el("button",{class:"btn btn-small",type:"button",text:"选用 / 编辑",onclick:()=>{
+    const actions = el("div", {class:"actions"});
+    row.appendChild(actions);
+    actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"选用 / 编辑",onclick:()=>{
+      if (!Settings.canClose()) return;
       $("settings-drawer").close();openCreateTask();applyTaskTemplate(template.id);
     }}));
-    row.appendChild(el("button",{class:"btn btn-small btn-danger",type:"button",text:"删除",onclick:async()=>{
-      if(!confirm("删除此编码任务模板？已创建任务不会改变。"))return;
-      try{await api("/task-templates/"+template.id,{method:"DELETE"});await loadRuntimeSettings();renderSettingsTemplates();}
-      catch(err){$("settings-message").textContent=err.message;}
-    }}));
+    actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"复制",onclick:()=>Settings.copyTemplate(template)}));
+    actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"导出",onclick:()=>Settings.exportTemplates([template.id])}));
+    actions.appendChild(el("button",{class:"btn btn-small btn-danger",type:"button",text:"删除",onclick:()=>Settings.removeTemplate(template)}));
     $("settings-template-list").appendChild(row);
   }
 }
 
 /* ---------- bootstrap ---------- */
 async function boot() {
+  Settings.init();
+  UI.initMessages();
   try {
     const caps = await api("/capabilities");
     state.caps = caps;
@@ -441,7 +425,7 @@ async function boot() {
     await loadRoots();
     await loadRuntimeSettings();
   } catch (err) {
-    state.systemError = "无法读取系统状态：" + err.message;
+    state.systemError = "无法读取系统状态：" + UI.error(err);
     $("system-message").textContent = state.systemError;
     showBanner("error", "无法连接后端，请检查服务或鉴权。详见系统详情。");
   }
@@ -474,7 +458,9 @@ function renderSystemStatus() {
     ]));
   }
   if (!state.roots.length) $("storage-status").appendChild(el("p", {class: "hint", text: "未配置存储根，无法选择源文件。"}));
-  $("system-message").textContent = [...(engine.notes || []), ...(engine.probe_notes || []), "状态为最近读取结果；存储可访问不代表已验证输出写入。"].join(" ");
+  const notes = [...(engine.notes || []), ...(engine.probe_notes || [])];
+  $("system-message").textContent = [...notes.filter(note => !UI.english(note)), "状态为最近读取结果；存储可访问不代表已验证输出写入。"].join(" ");
+  if ($("engine-raw-notes")) $("engine-raw-notes").textContent = notes.join("\n") || "没有额外诊断信息。";
   $("btn-create-task").disabled = state.queueing || state.validating;
   renderCodecStatus();
 }
@@ -522,7 +508,7 @@ async function refreshResources() {
     state.resourceError = "";
     renderResources(data);
   } catch (err) {
-    state.resourceError = (state.resources ? "刷新失败，以下为上次采样：" : "无法读取资源：") + err.message;
+    state.resourceError = (state.resources ? "刷新失败，以下为上次采样：" : "无法读取资源：") + UI.error(err);
     $("resource-message").textContent = state.resourceError;
     renderSystemSummary();
   } finally { state.resourcesLoading = false; }
@@ -578,7 +564,7 @@ function renderCodecStatus() {
     ]));
   }
   box.appendChild(el("h3", {text: "HandBrake 解码后端"}));
-  box.appendChild(el("p", {class: "hint", text: "内置软件解码器没有完整枚举 CLI，逐格式支持以实际源扫描为准。后端诊断不等于解码实测。"}));
+  box.appendChild(el("p", {class: "hint", text: "内置软件解码器没有完整的命令行枚举接口，逐格式支持以实际源扫描为准。后端诊断不等于解码实测。"}));
   const labels = {not_compiled: "未编译到引擎", unavailable: "当前不可用", reported: "引擎报告支持", unknown: "未报告 / 未知"};
   for (const name of ["nvdec", "qsv", "videotoolbox"]) {
     const item = state.caps?.engine.decoder_backends?.[name];
@@ -587,7 +573,7 @@ function renderCodecStatus() {
   const inventory = state.decoderInventory;
   box.appendChild(el("h3", {text: "独立 FFmpeg 解码器"}));
   box.appendChild(el("p", {class: "hint", text: (inventory?.status === "missing" ? "未检测到 FFmpeg。" : inventory?.status === "reported" ? "已安装，以下为构建提供的清单。" : "检测未知。") + (inventory?.note || "不代表 HandBrake 内置库。" )}));
-  for (const item of inventory?.items || []) box.appendChild(el("p", {class: "hint", text: `${item.kind} / ${item.name}：${item.description}`}));
+  for (const item of inventory?.items || []) box.appendChild(el("p", {class: "hint", text: `${{video:"视频",audio:"音频",subtitle:"字幕"}[item.kind] || "其他"} / ${item.name}：${item.description}`}));
 }
 
 async function refreshCodecs() {
@@ -603,7 +589,7 @@ async function refreshCodecs() {
     document.querySelectorAll(".encoder-control").forEach(renderEncoderControl);
     settingsChanged();
     $("codec-message").textContent = "检测完成；内置不等于任意素材可编码。";
-  } catch (err) { $("codec-message").textContent = "检测失败，保留上次结果：" + err.message; }
+  } catch (err) { $("codec-message").textContent = "检测失败，保留上次结果：" + UI.error(err); }
   finally { $("btn-refresh-codecs").disabled = false; }
 }
 
@@ -627,7 +613,7 @@ async function refreshSystem() {
     settingsChanged();
     renderSystemSummary();
   } catch (err) {
-    state.systemError = "刷新失败，保留上次结果：" + err.message;
+    state.systemError = "刷新失败，保留上次结果：" + UI.error(err);
     $("system-message").textContent = state.systemError;
     renderSystemSummary();
   } finally {
@@ -667,17 +653,17 @@ function renderSpecOptions(opts) {
   initializeEncoderControl($("video-encoder"), "video", "x264");
 
   renderChoice($("video-quality-type"), opts.video_quality_types, { value: "rf" });
-  renderChoice($("video-preset"), [{ value: "", label: "默认" }, ...opts.video_presets.map((p) => ({ value: p, label: p }))], { value: "medium" });
-  renderChoice($("video-tune"), [{ value: "", label: "默认（无调优）" }, ...opts.video_tunes.map((t) => ({ value: t, label: t === "none" ? "无（none）" : t }))]);
-  renderChoice($("video-profile"), [{ value: "", label: "默认（自动）" }, ...opts.video_profiles.map((p) => ({ value: p, label: p === "auto" ? "自动（auto）" : p }))]);
-  renderChoice($("video-level"), [{ value: "", label: "默认（自动）" }, ...opts.video_levels.map((l) => ({ value: l, label: l === "auto" ? "自动（auto）" : l }))]);
+  renderChoice($("video-preset"), [{ value: "", label: "默认" }, ...opts.video_presets.map((p) => ({ value: p, label: CHOICE_LABELS[p] || p }))], { value: "medium" });
+  renderChoice($("video-tune"), [{ value: "", label: "默认（无调优）" }, ...opts.video_tunes.map((t) => ({ value: t, label: CHOICE_LABELS[t] || t }))]);
+  renderChoice($("video-profile"), [{ value: "", label: "默认（自动）" }, ...opts.video_profiles.map((p) => ({ value: p, label: CHOICE_LABELS[p] || p }))]);
+  renderChoice($("video-level"), [{ value: "", label: "默认（自动）" }, ...opts.video_levels.map((l) => ({ value: l, label: CHOICE_LABELS[l] || l }))]);
   renderChoice($("video-framerate"), opts.framerates, { value: "auto" });
 
   const rules = opts.ui_constraints;
   if (rules) {
     renderChoice($("dim-anamorphic"), rules.anamorphic, { value: "auto", labels: {auto: "自动", none: "关闭", loose: "宽松"} });
     renderChoice($("flt-deinterlace"), rules.deinterlace, { value: "off", labels: {off: "关闭", "skip-spatial": "Yadif（跳过空间检查）", default: "Yadif（默认）", bob: "Bob（双倍帧率）"} });
-    renderChoice($("flt-denoise"), rules.denoise, { value: "off", labels: {off: "关闭", nlmeans: "NLMeans", hqdn3d: "HQDN3D"} });
+    renderChoice($("flt-denoise"), rules.denoise, { value: "off", labels: CHOICE_LABELS });
     renderChoice($("flt-detelecine"), rules.detelecine, { value: "off" });
   }
   renderChoice($("sub-behavior"), opts.subtitle_behaviors, {
@@ -742,7 +728,7 @@ async function browse(path) {
       browser.appendChild(node);
     }
   } catch (err) {
-    if (request === state.browserRequest && $("file-picker-dialog").open) $("browser-message").textContent = "读取目录失败：" + err.message;
+    if (request === state.browserRequest && $("file-picker-dialog").open) $("browser-message").textContent = "读取目录失败：" + UI.error(err);
   }
 }
 
@@ -785,7 +771,7 @@ async function scanSource() {
     state.scan = data.scan;
     renderScan(data.scan);
   } catch (err) {
-    if (request === state.scanRequest) $("create-message").textContent = "扫描失败：" + err.message;
+    if (request === state.scanRequest) $("create-message").textContent = "扫描失败：" + UI.error(err);
   } finally {
     if (request === state.scanRequest) {
       state.scanning = false;
@@ -815,7 +801,7 @@ function renderScan(scan) {
 /* ---------- presets ---------- */
 const PRESET_GROUP_LABELS = {
   General: "通用", Web: "网络发布", Devices: "设备", Matroska: "Matroska",
-  Hardware: "硬件加速", Professional: "专业制作", "CLI Defaults": "CLI 默认",
+  Hardware: "硬件加速", Professional: "专业制作", "CLI Defaults": "命令行默认",
 };
 const PRESET_SOURCE_LABELS = { official: "官方预设", imported: "导入预设", custom: "自定义" };
 
@@ -830,8 +816,10 @@ function presetGroupLabel(category) {
 function updatePresetSummary() {
   const { source, preset } = state.presetSelection;
   $("preset-current-source").textContent = PRESET_SOURCE_LABELS[source] + (preset ? ` · ${presetGroupLabel(presetCategory(preset))}` : "");
-  $("preset-current-name").textContent = preset ? preset.name : "自定义参数";
-  $("preset-hint").textContent = preset ? `${preset.description ? preset.description + " " : ""}以预设为基底；仅选择后修改的参数会覆盖预设，未修改的控件值不会提交。` : "使用下方各标签中的参数。";
+  const display = preset ? UI.preset(preset, source) : null;
+  $("preset-current-name").textContent = display ? display.name : "自定义参数";
+  $("preset-current-name").title = preset?.name || "";
+  $("preset-hint").textContent = display ? `${display.description} 以预设为基底；仅修改的参数覆盖预设，未修改的值不提交。` : "使用下方各标签中的参数。";
 }
 
 function selectPreset(source, preset) {
@@ -870,7 +858,7 @@ async function loadPresets() {
   try {
     state.presets = await api("/presets");
   } catch (err) {
-    state.presetsError = "加载预设失败：" + err.message;
+    state.presetsError = "加载预设失败：" + UI.error(err);
   } finally {
     state.presetsLoading = false;
     renderPresets();
@@ -901,7 +889,7 @@ function renderPresets() {
     count.textContent = "0 个预设"; return;
   }
   const query = $("preset-search").value.trim().toLocaleLowerCase();
-  const filtered = all.filter((preset) => [preset.name, presetCategory(preset), presetGroupLabel(presetCategory(preset)), preset.description || ""].join(" ").toLocaleLowerCase().includes(query));
+  const filtered = all.filter((preset) => [preset.name, presetCategory(preset), presetGroupLabel(presetCategory(preset)), UI.preset(preset, source).name, preset.description || ""].join(" ").toLocaleLowerCase().includes(query));
   count.textContent = `${filtered.length} / ${all.length} 个预设`;
   if (!filtered.length) { message("没有匹配的预设，请调整关键词或清空搜索。"); return; }
   const groups = new Map();
@@ -924,13 +912,20 @@ function renderPresets() {
         "aria-pressed": String(selected), "data-preset-name": preset.name,
         onclick: () => selectPreset(source, source === "custom" ? null : preset),
       });
+      const display = UI.preset(preset, source);
       card.appendChild(el("span", { class: "preset-card-top" }, [
-        el("strong", { text: preset.name.split("/").pop() }),
+        el("strong", { text: display.name }),
         el("span", { class: "preset-card-check", text: selected ? "已选用 ✓" : "选择" }),
       ]));
-      card.appendChild(el("span", { class: "preset-card-description", text: preset.description || "此预设暂无说明。" }));
+      card.appendChild(el("span", { class: "preset-card-description", text: display.description }));
+      if (display.original) card.appendChild(el("span", { class:"preset-original", text:`原始名称：${display.original}`, title:display.rawDescription || display.original }));
+      if (display.rawDescription) card.setAttribute("data-raw-description", display.rawDescription);
       if (preset.file) card.appendChild(el("span", { class: "preset-card-file", text: `文件：${preset.file}` }));
-      grid.appendChild(card);
+      if (display.rawDescription) {
+        const entry = el("div", {class:"preset-card-entry"}, [card]);
+        entry.appendChild(el("details", {class:"raw-info"}, [el("summary", {text:"查看原始说明"}), el("p", {text:display.rawDescription})]));
+        grid.appendChild(entry);
+      } else grid.appendChild(card);
     }
     section.appendChild(grid);
     results.appendChild(section);
@@ -1081,7 +1076,7 @@ async function refreshEncoders() {
     renderSystemStatus();
     document.querySelectorAll(".encoder-control").forEach(renderEncoderControl);
   } catch (err) {
-    state.encodersError = "重新检测失败：" + err.message + "。下方保留上次结果，不代表当前状态。";
+    state.encodersError = "重新检测失败：" + UI.error(err) + "。下方保留上次结果，不代表当前状态。";
   } finally {
     state.encodersLoading = false;
     renderEncoderCards();
@@ -1101,7 +1096,7 @@ function renderEncoderCards() {
   const matchesFilter = (item, key) => key === "all" || item.device === key ||
     (key === "no_hardware" ? item.status === "no_hardware" : key === "not_installed" && item.status === "not_installed");
   for (const [key, label] of Object.entries({
-    all: "全部", cpu: "CPU 软件", gpu: "GPU 硬件", passthrough: "直通与自动",
+    all: "全部", cpu: "软件编码（CPU）", gpu: "硬件编码（GPU）", passthrough: "直通与自动",
     no_hardware: "缺少硬件支持", not_installed: "当前引擎不含",
   })) {
     if (key !== "all" && !all.some((item) => matchesFilter(item, key))) continue;
@@ -1313,7 +1308,7 @@ async function prevalidate(snapshot, revision) {
   if (!result.valid) throw new Error("后端未确认参数有效。");
   showValidation("passed", result.args_scope === "overrides"
     ? "预校验通过：已解析预设，详情仅展示显式覆盖参数。"
-    : "预校验通过：自定义参数结构与 CLI 映射有效。", { ...result, submitted_spec: snapshot.spec });
+    : "预校验通过：自定义参数结构与命令行映射有效。", { ...result, submitted_spec: snapshot.spec });
   return true;
 }
 
@@ -1326,7 +1321,7 @@ async function validateSettings() {
     await prevalidate(captureSettings(), revision);
   } catch (err) {
     showValidation(revision === state.settingsRevision ? "failed" : "stale",
-      revision === state.settingsRevision ? "预校验失败：" + err.message : "设置已修改，请重新预校验。", null);
+      revision === state.settingsRevision ? "预校验失败：" + UI.error(err) : "设置已修改，请重新预校验。", null);
   } finally {
     state.validating = false;
     updateActionButtons();
@@ -1502,8 +1497,8 @@ async function queueJob() {
     $("queue-message").textContent = "任务已加入队列，点击任务查看详情。";
   } catch (err) {
     if (!validated) showValidation(revision === state.settingsRevision ? "failed" : "stale",
-      revision === state.settingsRevision ? "预校验失败，未加入队列：" + err.message : "设置已修改，请重新加入队列。", null);
-    else $("create-message").textContent = "加入队列失败：" + err.message;
+      revision === state.settingsRevision ? "预校验失败，未加入队列：" + UI.error(err) : "设置已修改，请重新加入队列。", null);
+    else $("create-message").textContent = "加入队列失败：" + UI.error(err);
   } finally {
     state.posting = false;
     state.queueing = false;
@@ -1647,12 +1642,12 @@ function renderQueueJob(job) {
   fill.style.width = pct + "%";
   progress.appendChild(el("div", {class: "queue-progress-track", role: "progressbar", "aria-label": `${job.input.path} 转换进度`, "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(pct)}, [fill]));
   const active = ["probing", "running", "finalizing"].includes(job.status);
-  const timing = active ? `${job.speed != null ? `${job.speed} fps` : "速度待报告"} · ${job.eta_seconds != null ? `剩余 ${formatDuration(job.eta_seconds)}` : "剩余时间未知"}`
+  const timing = active ? `${job.speed != null ? `${job.speed} 帧/秒` : "速度待报告"} · ${job.eta_seconds != null ? `剩余 ${formatDuration(job.eta_seconds)}` : "剩余时间未知"}`
     : job.status === "succeeded" ? "转换完成，输出已保存" : job.status === "paused"
       ? (["probing", "running", "finalizing"].includes(job.paused_from) ? "原地暂停，继续后恢复处理" : "尚未执行，继续后进入队列")
     : job.status === "waiting" ? "等待手动启动" : job.status === "queued" ? "等待可用并发名额" : "任务已停止";
   progress.appendChild(el("span", {class: "queue-job-timing", text: timing}));
-  if (job.error && job.error !== "cancel requested") progress.appendChild(el("span", {class: "queue-job-error", text: job.error, title: job.error}));
+  if (job.error && job.error !== "cancel requested") progress.appendChild(el("span", {class: "queue-job-error", text: UI.error(job.error), title: job.error}));
   item.appendChild(progress);
   item.appendChild(jobActionButtons(job));
   return item;
@@ -1678,7 +1673,7 @@ async function batchJobAction(action) {
         succeeded++;
         state.checkedJobs.delete(job.id);
         if (action === "delete" && state.selectedJob === job.id) {closeJobDrawer(); state.selectedJob = null;}
-      } catch (err) {errors.push(`${job.input.path.split("/").pop()}：${err.message}`);}
+      } catch (err) {errors.push(`${job.input.path.split("/").pop()}：${UI.error(err)}`);}
     }
     state.queueFeedback = `批量操作完成：成功 ${succeeded} 项${errors.length ? `，失败 ${errors.length} 项。${errors.join("；")}` : "。"}`;
     $("queue-message").textContent = state.queueFeedback;
@@ -1725,7 +1720,7 @@ async function refreshJobs() {
     }
     renderQueue();
   } catch (err) {
-    $("queue-message").textContent = (state.jobsLoaded ? "刷新失败，保留上次队列：" : "无法读取任务队列：") + err.message;
+    $("queue-message").textContent = (state.jobsLoaded ? "刷新失败，保留上次队列：" : "无法读取任务队列：") + UI.error(err);
   } finally {
     state.jobsLoading = false;
   }
@@ -1755,7 +1750,7 @@ async function jobAction(id,action) {
     else if(state.selectedJob===id)await loadJobDetail(id);
     await refreshJobs();
   }catch(err){
-    const box=state.selectedJob===id&&$("job-drawer").open?$("detail-message"):$("queue-message");box.textContent="操作失败："+err.message;
+    const box=state.selectedJob===id&&$("job-drawer").open?$("detail-message"):$("queue-message");box.textContent="操作失败："+UI.error(err);
   }finally{
     state.jobActionsPending.delete(id);state.jobsSignature=null;
     renderQueue();
@@ -1781,7 +1776,7 @@ async function loadJobDetail(id) {
       $("job-log").scrollTop = scroll;
     }
   } catch (err) {
-    if (request === state.detailRequest && state.selectedJob === id) $("detail-message").textContent = "详情刷新失败：" + err.message;
+    if (request === state.detailRequest && state.selectedJob === id) $("detail-message").textContent = "详情刷新失败：" + UI.error(err);
   }
 }
 
@@ -1791,7 +1786,8 @@ function renderJobDetail(job) {
   $("detail-status").textContent = jobStatusLabel(job);
   $("detail-status").className = "status-tag status-" + job.status;
   $("detail-error").hidden = !job.error;
-  $("detail-error").textContent = job.error || "";
+  $("detail-error").textContent = job.error ? UI.error(job.error) : "";
+  $("detail-error").title = job.error || "";
   const controls = JSON.stringify([job.actions, state.jobActionsPending.has(job.id)]);
   if (controls !== state.detailControls) { state.detailControls=controls; $("detail-actions").replaceChildren(jobActionButtons(job)); }
   const box = $("job-detail");
@@ -1802,6 +1798,7 @@ function renderJobDetail(job) {
     ["容器", job.container || "auto"],
     ["输入", job.input.path],
     ["输出", job.output.path],
+    ...(job.output_renamed ? [["同名处理", `自动编号（原请求：${job.requested_output_path}）`]] : []),
     ["标题数", job.title_count != null ? String(job.title_count) : "—"],
     ["开始", job.started_at || "—"],
     ["结束", job.finished_at || "—"],
@@ -1816,7 +1813,7 @@ function renderJobDetail(job) {
   if($("detail-spec").textContent!==specText)$("detail-spec").textContent=specText;
   const pct = jobPercent(job);
   $("progress-bar").style.width = pct + "%";
-  const speed = job.speed != null ? ` · ${job.speed} fps` : "";
+  const speed = job.speed != null ? ` · ${job.speed} 帧/秒` : "";
   const eta = job.eta_seconds != null ? ` · 剩余 ${formatDuration(job.eta_seconds)}` : "";
   $("progress-label").textContent = `${pct}%${speed}${eta}`;
   $("btn-cancel").disabled = ["queued", "probing", "running", "finalizing"].includes(job.status) ? false : true;
@@ -1833,7 +1830,7 @@ async function cancelJob() {
     if (state.selectedJob === id) await loadJobDetail(id);
     await refreshJobs();
   } catch (err) {
-    if (state.selectedJob === id && $("job-drawer").open) $("detail-message").textContent = "取消失败：" + err.message;
+    if (state.selectedJob === id && $("job-drawer").open) $("detail-message").textContent = "取消失败：" + UI.error(err);
   } finally {
     state.canceling = false;
     if (state.selectedJob === id && $("job-drawer").open && state.detailJob?.id === id) {
@@ -1848,9 +1845,9 @@ function renderFeatureMatrix(features) {
   body.innerHTML = "";
   for (const f of features) {
     body.appendChild(el("tr", {}, [
-      el("td", { text: f.area }),
-      el("td", { class: `feat-${f.status}`, text: f.status }),
-      el("td", { text: f.note }),
+      el("td", { text: f.area_zh || f.area }),
+      el("td", { class: `feat-${f.status}`, text: UI.status[f.status] || "未知" }),
+      el("td", { text: f.note_zh || f.note }),
     ]));
   }
 }
@@ -1861,12 +1858,14 @@ function startPolling() {
   state.pollTimer = setInterval(async () => {
     if (!document.hidden && Date.now() - state.resourcesAt >= 5000) refreshResources();
     await refreshJobs();
+    Settings.pollEvents();
     if (state.selectedJob && $("job-drawer").open) await loadJobDetail(state.selectedJob);
-  }, 2000);
+  }, Settings.refreshSeconds() * 1000);
 }
 
 /* ---------- events ---------- */
 function wireEvents() {
+  Settings.wire();
   $("queue-search").addEventListener("input", () => {state.queueSearch = $("queue-search").value; renderQueue();});
   $("queue-select-all").addEventListener("change", () => {
     const checked = $("queue-select-all").checked;
@@ -1889,8 +1888,8 @@ function wireEvents() {
     });
   });
   $("btn-open-settings").addEventListener("click", openSettingsDrawer);
-  $("btn-close-settings").addEventListener("click", () => {if(!state.settingsSaving)$("settings-drawer").close();});
-  $("settings-drawer").addEventListener("cancel",event=>{if(state.settingsSaving)event.preventDefault();});
+  $("btn-close-settings").addEventListener("click", Settings.close);
+  $("settings-drawer").addEventListener("cancel",event=>{if(!Settings.canClose())event.preventDefault();});
   $("settings-drawer").addEventListener("close",()=>{syncDialogLock();$("btn-open-settings").focus();});
   $("btn-save-settings").addEventListener("click",saveRuntimeSettings);
   $("btn-name-preview").addEventListener("click",previewOutputName);
@@ -1901,6 +1900,7 @@ function wireEvents() {
     else {state.templateEditing=null;$("template-name").value="";$("template-description").value="";}
   });
   $("btn-new-template").addEventListener("click",()=>{
+    if (!Settings.canClose()) return;
     $("settings-drawer").close();openCreateTask();state.templateEditing=null;$("template-name").value="";$("template-description").value="";
   });
   $("output-name").addEventListener("input",()=>{state.namingRequest++;});

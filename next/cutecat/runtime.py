@@ -7,6 +7,10 @@ from pathlib import PurePosixPath
 from .pathsafe import normalise_relative
 
 
+class SettingsConflict(ValueError):
+    pass
+
+
 class RuntimeSettings:
     def __init__(self, config, store):
         self.config, self.store = config, store
@@ -17,6 +21,7 @@ class RuntimeSettings:
             "auto_start": True, "job_timeout_seconds": config.engine.job_timeout_seconds,
             "default_output_root": next((r.id for r in config.storage_roots if not r.read_only), ""),
             "output_name_template": "converted/{source}.{ext}", "default_task_template_id": None,
+            "output_collision_policy": "reject",
         }
         self.read()
 
@@ -26,10 +31,16 @@ class RuntimeSettings:
             return {**self.defaults, **(json.loads(raw) if raw else {})}
 
     def save(self, payload):
-        if not isinstance(payload, dict) or set(payload) - set(self.defaults):
+        if not isinstance(payload, dict) or set(payload) - set(self.defaults) - {"expected_revision"}:
             raise ValueError("unknown runtime setting")
         with self.lock:
-            values = {**self.read(), **payload}
+            revision = int(self.store.get_setting("runtime_revision", "0"))
+            expected = payload.get("expected_revision", revision)
+            if type(expected) is not int or expected != revision:
+                raise SettingsConflict("设置已被其他页面修改，请重新读取后保存")
+            values = {**self.read(), **{k: v for k, v in payload.items() if k in self.defaults}}
+            if values["output_collision_policy"] not in ("reject", "rename"):
+                raise ValueError("output collision policy must be reject or rename")
             for key, low, high in (("max_concurrent_jobs", 1, 8), ("job_timeout_seconds", 0, 86400)):
                 n = values[key]
                 if type(n) is not int or not low <= n <= high:
@@ -43,7 +54,7 @@ class RuntimeSettings:
             identity = values["default_task_template_id"]
             if identity is not None and identity not in {t["id"] for t in self.store.list_templates()}:
                 raise ValueError("unknown default task template")
-            self.store.set_setting("runtime_settings", json.dumps(values))
+            self.store.set_settings({"runtime_settings": json.dumps(values), "runtime_revision": str(revision + 1)})
             return values
 
     def claim(self):
@@ -61,7 +72,8 @@ class RuntimeSettings:
 
     def report(self):
         with self.lock:
-            return {"values": self.read(), "active_slots": self.active,
+            return {"values": self.read(), "defaults": dict(self.defaults), "active_slots": self.active,
+                    "revision": int(self.store.get_setting("runtime_revision", "0")),
                     "source": "SQLite settings override TOML defaults", "has_saved_settings": self.store.get_setting("runtime_settings") is not None}
 
 

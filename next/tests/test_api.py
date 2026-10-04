@@ -50,6 +50,53 @@ class ApiTests(unittest.TestCase):
         self.store.close()
         self.env.cleanup()
 
+    def test_settings_revision_and_collision_snapshot(self):
+        _, report = _request(self.port, "GET", "/api/v1/settings")
+        self.assertEqual(report["defaults"]["output_collision_policy"], "reject")
+        code, saved = _request(self.port, "POST", "/api/v1/settings", {"output_collision_policy":"rename","auto_start":False,"job_timeout_seconds":50,"expected_revision":report["revision"]})
+        self.assertEqual(code,200)
+        self.assertEqual(_request(self.port,"POST","/api/v1/settings",{"expected_revision":report["revision"]})[0],409)
+        payload={"input":{"root":"media","path":"movie.mp4"},"output":{"root":"out","path":"same.mp4"},"spec":{}}
+        code, first=_request(self.port,"POST","/api/v1/jobs",payload)
+        self.assertEqual(code,200,first)
+        code, second=_request(self.port,"POST","/api/v1/jobs",payload)
+        self.assertEqual(code,200,second)
+        self.assertEqual(second["output"]["path"],"same (1).mp4")
+        self.assertTrue(second["output_renamed"])
+        (self.env.out / "folder.mp4").mkdir()
+        payload["output"]["path"]="folder.mp4"
+        code, renamed=_request(self.port,"POST","/api/v1/jobs",payload)
+        self.assertEqual(code,200,renamed)
+        self.assertEqual(renamed["output"]["path"],"folder (1).mp4")
+        self.assertEqual(self.store.get_job(first["id"]).execution["settings"]["job_timeout_seconds"],50)
+        _request(self.port,"POST","/api/v1/settings",{"job_timeout_seconds":100})
+        self.assertEqual(self.store.get_job(first["id"]).execution["settings"]["job_timeout_seconds"],50)
+
+    def test_events_and_maintenance_api_validation(self):
+        code, data=_request(self.port,"GET","/api/v1/job-events")
+        self.assertEqual(code,200)
+        self.assertEqual(data["events"],[])
+        for query in ("after=-1","limit=0","after=abc"):
+            self.assertEqual(_request(self.port,"GET","/api/v1/job-events?"+query)[0],400)
+        code, preview=_request(self.port,"POST","/api/v1/maintenance/preview",{"days":30,"statuses":["succeeded"]})
+        self.assertEqual(code,200)
+        self.assertEqual(preview["count"],0)
+        self.assertEqual(_request(self.port,"POST","/api/v1/maintenance/cleanup",{"token":preview["token"]})[0],200)
+        self.assertEqual(_request(self.port,"POST","/api/v1/maintenance/cleanup",{"token":preview["token"]})[0],400)
+
+    def test_template_portable_import_export_api(self):
+        payload={"name":"portable","spec":{},"form_spec":{},"baseline":None,"version":1}
+        code, original=_request(self.port,"POST","/api/v1/task-templates",payload)
+        self.assertEqual(code,200,original)
+        code,bundle=_request(self.port,"POST","/api/v1/task-templates/export",{"ids":[original["id"]]})
+        self.assertEqual(code,200,bundle)
+        self.assertEqual(_request(self.port,"POST","/api/v1/task-templates/import-preview",bundle)[1]["count"],1)
+        code,imported=_request(self.port,"POST","/api/v1/task-templates/import",bundle)
+        self.assertEqual(code,200,imported)
+        self.assertNotEqual(imported["templates"][0]["id"],original["id"])
+        self.assertEqual(_request(self.port,"POST","/api/v1/task-templates",{**payload,"id":"forged"})[0],400)
+        self.assertEqual(_request(self.port,"POST","/api/v1/task-templates",{**payload,"version":2})[0],400)
+
     def test_health_live(self):
         status, data = _request(self.port, "GET", "/health/live")
         self.assertEqual(status, 200)
@@ -104,6 +151,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["engine"]["available"])
         self.assertIn("features", data)
+        self.assertTrue(all(f.get("id") and f.get("area_zh") and f.get("note_zh") for f in data["features"]))
         self.assertIn("spec_options", data)
 
     def test_encoders_endpoint(self):

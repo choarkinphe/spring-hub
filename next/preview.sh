@@ -44,14 +44,14 @@ ffprobe_bin = ""
 
 [[storage_roots]]
 id = "media"
-label = "Preview media"
+label = "预览媒体"
 path = "$MEDIA"
 read_only = false
 mount_marker = ".cute-cat-mounted"
 
 [[storage_roots]]
 id = "out"
-label = "Preview output"
+label = "预览输出"
 path = "$OUT"
 read_only = false
 CONFIG

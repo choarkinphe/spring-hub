@@ -53,7 +53,7 @@ from . import __version__
 from .config import AppConfig
 from .engine import EngineError, HandBrakeEngine
 from .admission import AdmissionError, validate_encoders
-from .pathsafe import PathSafetyError, resolve_request, resolve_spec_files, validate_job_paths
+from .pathsafe import PathSafetyError, resolve_request, resolve_spec_files, validate_job_paths, assert_writable
 from .presets import (
     PresetError,
     discover_preset_files,
@@ -84,7 +84,10 @@ from .spec import (
 from .store import Store
 from .system_status import SystemStatus
 from .decoders import decoder_inventory
-from .runtime import RuntimeSettings, output_name
+from .runtime import RuntimeSettings, SettingsConflict, output_name
+from .outputs import allocate_output, pending_paths, OutputConflict
+from .maintenance import Maintenance
+from .templates import TemplateBundles, validate_template
 
 MAX_BODY_BYTES = 1_000_000
 
@@ -103,6 +106,8 @@ class AppState:
         self.store = store
         self.engine = engine
         self.runtime = RuntimeSettings(config, store)
+        self.maintenance = Maintenance(store)
+        self.templates = TemplateBundles(store, engine)
         self.system_status = SystemStatus(config)
         self.web_dir = Path(config.web_dir) if config.web_dir else Path(__file__).resolve().parent.parent / "web"
 
@@ -153,7 +158,7 @@ def _feature_matrix() -> list[dict]:
     ``unverified`` because no GPU was available to test.
     """
 
-    return [
+    features = [
         {"area": "Service resources + codec report", "status": "implemented",
          "note": "Read-only CPU/memory/GPU/disk metrics for the service-visible environment; unknowns stay unknown. "
                  "Encoder presence reuses the engine probe; decoder diagnostics and optional independent FFmpeg inventory "
@@ -207,6 +212,27 @@ def _feature_matrix() -> list[dict]:
         {"area": "Disc menus / multi-node scheduling", "status": "disabled",
          "note": "Out of scope for this version."},
     ]
+    chinese = [
+        ("resources", "资源与编解码器报告", "只读采集服务可见的处理器、内存、显卡与磁盘信息。未知不填零；编码器提供情况和运行可用性分开，不保证全部素材兼容。"),
+        ("web", "原生网页工作台", "原生网页，不依赖远程桌面或前端框架。"),
+        ("engine", "真实 HandBrake 引擎", "已验证 HandBrake 1.11 的部分处理器转码和预设任务；未验证所有编码器与参数组合。"),
+        ("scan", "源文件扫描", "解析媒体标题与轨道信息，已有代表性数据回归测试。"),
+        ("presets", "官方预设", "真实预设列表、规范化与部分转码产物已验证。"),
+        ("preset_import", "预设导入与路径保护", "预设身份和任务快照保持独立，已验证导入预设转码；原预设文件变化不影响已创建任务。"),
+        ("admission", "编码器准入检查", "提交时检查有效编码器，执行前重新检测；不可用时拒绝，不自动切回软件编码。"),
+        ("spec", "结构化参数白名单", "拒绝未知或不支持的参数；部分尺寸、滤镜、颜色、无损和音轨组合已实测，不保证所有组合。"),
+        ("validation", "参数预校验与控件联动", "无需选择源文件即可预校验结构、预设和命令映射；不验证文件存在性、轨道、硬件或实际编码。"),
+        ("queue", "任务队列、控制与设置", "支持启动、重试、暂停、继续和动态并发；记录清理不删除媒体。设置、模板、输出编号与完成事件已实现。"),
+        ("paths", "存储路径安全", "检查真实路径包含关系与软链接逃逸，已有回归测试。"),
+        ("tabs", "七标签编码设置", "摘要、尺寸、滤镜、视频、音频、字幕和章节均与结构化参数绑定。"),
+        ("preview", "画面预览与缩略图", "尚未实现画面渲染，入口停用，不用模拟画面代替。"),
+        ("hardware", "硬件编码", "准入要求微型实例化检测成功。本机缺少可用硬件编码环境，完整显卡转码仍未验证。"),
+        ("mounts", "容器内网络共享挂载", "由宿主机或容器部署挂载网络共享，应用不执行挂载。"),
+        ("docker", "容器镜像与部署", "已提供部署文件；当前无容器运行环境，未完成镜像构建和运行验证。"),
+        ("advanced", "光盘菜单与多节点调度", "本版本不提供这些功能。"),
+    ]
+    return [{**feature, "id": identity, "area_zh": area, "note_zh": note}
+            for feature, (identity, area, note) in zip(features, chinese)]
 
 
 # -- request handler -------------------------------------------------------
@@ -310,6 +336,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 try:
                     self.state.runtime.save(body or {})
+                except SettingsConflict as exc:
+                    raise ApiError(409, str(exc)) from exc
                 except (ValueError, PathSafetyError) as exc:
                     raise ApiError(400, str(exc)) from exc
                 return self.state.runtime.report()
@@ -322,6 +350,33 @@ class Handler(BaseHTTPRequestHandler):
                 return {"path": output_name(payload.get("template", self.state.runtime.read()["output_name_template"]),
                     payload.get("source", "source"), payload.get("encoder", "encoder"), payload.get("preset"), payload.get("container", "auto"))}
             except (ValueError, PathSafetyError) as exc:
+                raise ApiError(400, str(exc)) from exc
+
+        if path == "/api/v1/job-events" and method == "GET":
+            try:
+                after = int(query["after"][0]) if "after" in query else None
+                limit = int(query.get("limit", ["100"])[0])
+                if after is not None and after < 0 or not 1 <= limit <= 200:
+                    raise ValueError("invalid cursor/limit")
+            except (ValueError, IndexError) as exc:
+                raise ApiError(400, "invalid event cursor/limit") from exc
+            return store.event_report(after, limit)
+
+        if path in ("/api/v1/maintenance/preview", "/api/v1/maintenance/cleanup") and method == "POST":
+            try:
+                return (self.state.maintenance.preview if path.endswith("preview") else self.state.maintenance.cleanup)(body or {})
+            except ValueError as exc:
+                raise ApiError(400, str(exc)) from exc
+
+        if path == "/api/v1/task-templates/export" and method == "POST":
+            try:
+                return self.state.templates.export(body or {})
+            except (ValueError, SpecError, PresetError) as exc:
+                raise ApiError(400, str(exc)) from exc
+        if path in ("/api/v1/task-templates/import-preview", "/api/v1/task-templates/import") and method == "POST":
+            try:
+                return self.state.templates.import_bundle(body or {}, preview=path.endswith("import-preview"))
+            except (ValueError, SpecError, PresetError) as exc:
                 raise ApiError(400, str(exc)) from exc
 
         match_template = re.fullmatch(r"/api/v1/task-templates(?:/([0-9a-fA-F\-]+))?", path)
@@ -337,23 +392,12 @@ class Handler(BaseHTTPRequestHandler):
                     store.delete_template(identity)
                 return {"deleted": True}
             if method == "POST":
-                payload = body or {}
-                if set(payload) - {"name", "description", "spec", "preset_id", "form_spec", "baseline", "version"}:
-                    raise ApiError(400, "unknown template field")
-                name = payload.get("name")
-                description = payload.get("description", "")
-                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or not isinstance(description, str) or len(description) > 500:
-                    raise ApiError(400, "invalid template name/description")
-                self._prepare_spec(payload.get("spec", {}), payload.get("preset_id", "custom"))
                 try:
-                    if "form_spec" not in payload:
-                        raise SpecError("template form_spec is required")
-                    TranscodeSpec.from_dict(payload["form_spec"])
-                    if payload.get("baseline") is not None:
-                        TranscodeSpec.from_dict(payload["baseline"])
-                except SpecError as exc:
+                    payload = validate_template(body or {})
+                except (ValueError, SpecError) as exc:
                     raise ApiError(400, str(exc)) from exc
-                return store.save_template({**payload, "name": name.strip(), "description": description, "version": 1}, identity)
+                self._prepare_spec(payload.get("spec", {}), payload.get("preset_id", "custom"))
+                return store.save_template(payload, identity)
 
         if path == "/api/v1/system/status" and method == "GET":
             return self.state.system_status.snapshot()
@@ -610,12 +654,12 @@ class Handler(BaseHTTPRequestHandler):
                 str(output_ref.get("root", "")),
                 str(output_ref.get("path", "")),
             )
-            validate_job_paths(input_path, output_path)
+            if output_path.is_dir and self.state.runtime.read()["output_collision_policy"] == "rename" and output_path.relative:
+                assert_writable(output_path)
+            else:
+                validate_job_paths(input_path, output_path)
         except PathSafetyError as exc:
             raise ApiError(400, str(exc)) from exc
-
-        if output_path.absolute.exists() and self.state.config.engine.refuse_overwrite:
-            raise ApiError(409, "output already exists")
 
         overrides = body.get("spec") or {}
         spec, preset_id, preset_name, document, args = self._prepare_spec(
@@ -627,21 +671,27 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(exc.status, str(exc)) from exc
         except EngineError as exc:
             raise ApiError(503, str(exc)) from exc
-        execution = {"preset": document, "overrides": overrides}
-
-        job = self.state.store.create_job(
-            input_root=input_path.root.id,
-            input_path=input_path.relative,
-            output_root=output_path.root.id,
-            output_path=output_path.relative,
-            preset_id=preset_id,
-            preset_name=preset_name,
-            container=spec.container,
-            spec=spec.to_dict(),
-            args=args,
-            execution=execution,
-            auto_start=self.state.runtime.read()["auto_start"],
-        )
+        with self.state.runtime.lock:
+            values = self.state.runtime.read()
+            execution = {"preset": document, "overrides": overrides, "settings": {
+                "job_timeout_seconds": values["job_timeout_seconds"],
+                "output_collision_policy": values["output_collision_policy"],
+                "requested_output": output_path.relative,
+            }}
+            roots = list(self.state.config.storage_roots)
+            try:
+                job = self.state.store.create_allocated_job(
+                    lambda reserved: allocate_output(roots, input_path, output_path.root.id, output_path.relative,
+                        reserved | pending_paths(self.state.store, roots), values["output_collision_policy"]),
+                    input_root=input_path.root.id, input_path=input_path.relative,
+                    output_root=output_path.root.id, output_path=output_path.relative,
+                    preset_id=preset_id, preset_name=preset_name, container=spec.container,
+                    spec=spec.to_dict(), args=args, execution=execution, auto_start=values["auto_start"],
+                )
+            except OutputConflict as exc:
+                raise ApiError(409, str(exc)) from exc
+            except PathSafetyError as exc:
+                raise ApiError(400, str(exc)) from exc
         self.state.store.add_log(job.id, "info", f"job queued (preset={preset_id})")
         return job.as_dict()
 
