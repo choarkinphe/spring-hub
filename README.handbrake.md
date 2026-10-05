@@ -291,7 +291,7 @@ or codec is installed by this report. Explicit **重新检测编解码器** refr
 cached codec detection; ordinary resource refresh does not.
 
 **创建任务** opens a wide right-side drawer containing the seven encoding tabs. **选择文件**
-opens a separate storage browser on top; selecting a file returns to task settings.
+opens a narrower right-side storage browser drawer on top; selecting a file returns to task settings.
 Preset and encoder drawers remain available inside the creation flow. Keyboard
 focus stays within the topmost modal and returns to its trigger on close.
 

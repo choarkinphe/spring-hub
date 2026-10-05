@@ -422,7 +422,7 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn('id="storage-status"', home)
         self.assertIn('id="job-list"', body)
         self.assertIn('<dialog id="create-task-dialog"', body)
-        self.assertIn('<dialog id="file-picker-dialog"', body)
+        self.assertIn('<dialog id="file-picker-dialog" class="preset-drawer file-picker"', body)
         self.assertNotIn('data-workspace=', body)
         self.assertNotIn('data-page="queue" hidden', body)
 

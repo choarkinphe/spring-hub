@@ -413,7 +413,7 @@ body.queue-compact .job-list .queue-job { padding-top:10px; padding-bottom:10px;
 .ui-empty { padding:24px 16px; border:1px dashed var(--line); border-radius:var(--radius); color:var(--muted); font-size:13px; line-height:1.65; text-align:center; }
 .preset-original { display:block; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
 dialog.preset-drawer.create-drawer { width:min(960px,100vw); }
-.create-drawer .dialog-body { flex:1; }
+.create-drawer .dialog-body, .file-picker .dialog-body { flex:1; }
 .status-paused,.status-waiting { color:var(--warn); }
 @media(max-width:900px){ .job-row { flex-direction:column; align-items:stretch; } .job-controls { padding:0 10px 8px; } }
 @media(prefers-reduced-motion:reduce){ .progress-bar { transition:none; } }
@@ -541,7 +541,7 @@ dialog {
 dialog::backdrop { background: rgba(0,0,0,.6); }
 dialog.task-dialog { width:min(1040px, calc(100vw - 40px)); max-width:none; max-height:calc(100dvh - 40px); padding:0; overflow:hidden; }
 dialog.task-dialog[open] { display:flex; flex-direction:column; }
-dialog.file-picker { width:min(700px, calc(100vw - 40px)); }
+dialog.file-picker { width:min(700px, 100vw); }
 .dialog-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:20px 24px; border-bottom:1px solid var(--line); flex-shrink:0; }
 .dialog-heading h2 { font-size:22px; }
 .dialog-heading p { margin:4px 0 0; color:var(--muted); font-size:13px; }
