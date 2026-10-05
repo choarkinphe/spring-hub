@@ -31,8 +31,8 @@ class Worker:
         self.config = config
         self.store = store
         self.engine = engine
-        self.backends = Backends(config, engine)
         self.runtime = runtime or RuntimeSettings(config, store)
+        self.backends = Backends(config, engine, self.runtime)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -81,7 +81,7 @@ class Worker:
         if job is None or job.status in ("waiting", "succeeded", "failed", "canceled", "interrupted") or (job.status == "paused" and not job.execution_active):
             return
         name = engine_name((job.execution or {}).get("engine"))
-        engine = self.backends.get(name)
+        engine = self.backends.get(name, remote_config=(job.execution or {}).get("remote_config"))
         self.store.add_log(job_id, "info", f"job claimed (engine={name})")
         settings = (job.execution or {}).get("settings")
         timeout = settings["job_timeout_seconds"] if settings else self.runtime.read()["job_timeout_seconds"]

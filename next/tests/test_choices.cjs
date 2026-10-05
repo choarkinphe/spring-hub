@@ -684,7 +684,7 @@ test("completion polling starts at latest, advances cursor and does not replay d
   assert.equal(notices.children.length,1);
 });
 
-test("browser settings reject invalid preferences and six settings categories exist", () => {
+test("browser settings reject invalid preferences and seven settings categories exist", () => {
   const {context:c} = settingsHarness();
   const prefs = c.Settings.validPrefs({refresh:1,filter:"arbitrary",density:"huge",sound:"yes",desktop:true});
   assert.equal(prefs.refresh,2);
@@ -695,7 +695,7 @@ test("browser settings reject invalid preferences and six settings categories ex
   assert.equal(valid.refresh,10);
   assert.equal(valid.filter,"completed");
   const html=fs.readFileSync(path.join(__dirname,"../web/index.html"),"utf8");
-  assert.equal((html.match(/data-settings-panel=/g)||[]).length,6);
+  assert.equal((html.match(/data-settings-panel=/g)||[]).length,7);
   assert.match(html,/id="settings-fields" disabled/);
   assert.match(html,/id="setting-collision"/);
   assert.match(html,/id="btn-confirm-cleanup"[^>]*disabled/);
@@ -1039,6 +1039,72 @@ test("engine switch ignores late capability responses and invalidates validation
   assert.equal(n.get("spec-validation").dataset.status,"stale");
   assert.equal(n.get("btn-open-presets").disabled,true);
   assert.match(n.get("engine-choice-note").textContent,/不支持运行态暂停/);
+});
+
+function remoteSettingsHarness() {
+  const h=expandedSettingsHarness();
+  for (const id of ["setting-rffmpeg-bin","setting-rffprobe-bin","setting-remote-probe-dir","rffmpeg-config-state","btn-check-rffmpeg","rffmpeg-check-message","rffmpeg-check-results","engine-choice-note"]) h.control(id);
+  return h;
+}
+
+test("remote settings persist three fields without automatically contacting wrapper", async () => {
+  const {context:c,controls:n}=remoteSettingsHarness();
+  await c.Settings.open();
+  n.get("setting-rffmpeg-bin").value="/opt/rffmpeg/ffmpeg";
+  n.get("setting-rffprobe-bin").value="ffprobe";
+  n.get("setting-remote-probe-dir").value="/out/probes";
+  n.get("setting-timeout").value="99";
+  const calls=[];
+  c.api=async(route,options)=>{calls.push(route);return {values:JSON.parse(options.body),revision:1};};
+  await c.Settings.save();
+  assert.deepEqual(calls,["/settings"]);
+  assert.equal(vm.runInContext('state.runtimeSettings.rffmpeg_bin',c),"/opt/rffmpeg/ffmpeg");
+  assert.equal(c.Settings.dirty(),false);
+  c.api=async route=>{calls.push(route);return {status:"passed",message:"bounded version check",checks:[{ok:true,message:"version"}]};};
+  await c.Settings.checkRemote();
+  assert.deepEqual(calls,["/settings","/rffmpeg/check"]);
+  assert.match(n.get("rffmpeg-check-message").textContent,/基础检查通过/);
+  n.get("setting-rffmpeg-bin").value="changed";
+  await c.Settings.checkRemote();
+  assert.match(n.get("rffmpeg-check-message").textContent,/先保存/);
+  assert.equal(calls.length,2);
+});
+
+test("remote check avoids repeated clicks and discards closed drawer responses", async () => {
+  const {context:c,controls:n}=remoteSettingsHarness();
+  await c.Settings.open();
+  let finish;let calls=0;
+  c.api=()=>{calls++;return new Promise(resolve=>{finish=resolve;});};
+  const pending=c.Settings.checkRemote();await c.Settings.checkRemote();
+  assert.equal(calls,1);
+  c.Settings.close();
+  finish({status:"passed",message:"LATE",checks:[]});await pending;
+  assert.doesNotMatch(n.get("rffmpeg-check-message").textContent,/LATE/);
+});
+
+test("remote save invalidates selected engine without probing it", async () => {
+  const {context:c,controls:n}=remoteSettingsHarness();
+  await c.Settings.open();
+  vm.runInContext('state.engineId="rffmpeg";state.validation={status:"passed"}',c);
+  n.get("setting-rffmpeg-bin").value="wrapper";n.get("setting-rffprobe-bin").value="probe";n.get("setting-remote-probe-dir").value="/out";
+  const calls=[];c.api=async(route,options)=>{calls.push(route);return {values:JSON.parse(options.body),revision:1};};
+  await c.Settings.save();
+  assert.deepEqual(calls,["/settings"]);
+  assert.equal(vm.runInContext('state.caps.engine.available',c),false);
+  assert.equal(n.get("spec-validation").dataset.status,"stale");
+  assert.match(n.get("engine-choice-note").textContent,/保存不会联系远端/);
+});
+
+test("remote defaults reset only remote draft and does not discard other fields", async () => {
+  const {context:c,controls:n}=remoteSettingsHarness();
+  const original=c.api;
+  c.api=async route=>{const result=await original(route);if(route==="/settings")result.defaults={...result.defaults,rffmpeg_bin:"toml-wrapper",rffprobe_bin:"toml-probe",remote_probe_dir:"/out"};return result;};
+  await c.Settings.open();
+  n.get("setting-timeout").value="42";
+  c.Settings.selectSection("remote");c.Settings.resetSection();
+  assert.equal(n.get("setting-rffmpeg-bin").value,"toml-wrapper");
+  assert.equal(n.get("setting-timeout").value,"42");
+  assert.equal(c.Settings.dirty(),true);
 });
 
 test("numeric choice reads zero/empty without losing semantics", () => {

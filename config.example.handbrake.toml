@@ -23,7 +23,9 @@ handbrake_bin = "HandBrakeCLI"
 ffmpeg_bin = "ffmpeg"
 ffprobe_bin = "ffprobe"
 # Optional administrator-installed rffmpeg compatible ffmpeg/ffprobe entry points.
-# Leave empty to disable. These must accept ordinary FFmpeg/ffprobe argv.
+# Startup defaults; Settings > rffmpeg remote saves SQLite overrides for new jobs.
+# Clear all three web settings to disable; web defaults restore these values.
+# These must accept ordinary FFmpeg/ffprobe argv.
 rffmpeg_bin = ""
 rffprobe_bin = ""
 # Existing writable directory within a configured storage root, shared at the

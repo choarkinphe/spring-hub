@@ -89,6 +89,7 @@ from .templates import TemplateBundles, validate_template
 from .builtin_templates import list_templates, find_template
 from .backends import Backends, engine_name, admit
 from .preparation import request_spec, prepare
+from .remote_settings import RemoteCheck
 
 MAX_BODY_BYTES = 1_000_000
 
@@ -106,8 +107,9 @@ class AppState:
         self.config = config
         self.store = store
         self.engine = engine
-        self.backends = Backends(config, engine)
         self.runtime = RuntimeSettings(config, store)
+        self.backends = Backends(config, engine, self.runtime)
+        self.remote_check = RemoteCheck()
         self.maintenance = Maintenance(store)
         self.templates = TemplateBundles(store, engine)
         self.system_status = SystemStatus(config)
@@ -348,6 +350,19 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(400, str(exc)) from exc
                 return self.state.runtime.report()
 
+        if path == "/api/v1/rffmpeg/check" and method == "POST":
+            if body:
+                raise ApiError(400, "配置检查仅使用已保存配置，不接受程序路径或命令参数")
+            values = self.state.backends.remote_settings()
+            engine = self.state.backends.get("rffmpeg", remote_config=values)
+            try:
+                result = self.state.remote_check.run(engine.config, cfg.storage_roots)
+            except RuntimeError as exc:
+                raise ApiError(409, str(exc)) from exc
+            if values != self.state.backends.remote_settings():
+                raise ApiError(409, "检查期间 rffmpeg 配置已修改，请重新检查")
+            return result
+
         if path == "/api/v1/output-name" and method == "POST":
             payload = body or {}
             if set(payload) - {"source", "encoder", "preset", "container", "template"}:
@@ -416,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
                 "version": __version__,
                 "engine": caps.as_dict(),
                 "ffprobe": self.state.engine.ffprobe_path(),
-                "config": cfg.as_public_dict(),
+                "config": {**cfg.as_public_dict(), "effective_rffmpeg": self.state.backends.remote_settings()},
                 "engine_ids": ["handbrake", "ffmpeg", "rffmpeg"],
                 "spec_options": _spec_options(),
                 "encoder_catalog": self._encoder_catalog(caps),
@@ -438,7 +453,7 @@ class Handler(BaseHTTPRequestHandler):
                     "decoder_inventory": decoder_inventory(refresh) if name == "handbrake" else {"status": "reported" if engine.decoder_items else "unknown", "items": engine.decoder_items, "note": "当前所选引擎的构建清单；源格式支持以实际扫描为准，不代表 HandBrake 内置库。"}}
 
         if path == "/api/v1/config" and method == "GET":
-            return cfg.as_public_dict()
+            return {**cfg.as_public_dict(), "effective_rffmpeg": self.state.backends.remote_settings()}
 
         if path == "/api/v1/storage-roots" and method == "GET":
             return {
@@ -680,15 +695,19 @@ class Handler(BaseHTTPRequestHandler):
         spec, preset_id, preset_name, document, args = self._prepare_spec(
             overrides, identity, input_root=input_path.root.id, name=name,
         )
+        remote_config = self.state.backends.remote_settings() if name == "rffmpeg" else None
         try:
-            admit(self.state.backends.get(name), name, spec, preset=document, overrides=overrides)
+            admit(self.state.backends.get(name, remote_config=remote_config), name, spec, preset=document, overrides=overrides)
         except AdmissionError as exc:
             raise ApiError(exc.status, str(exc)) from exc
         except EngineError as exc:
             raise ApiError(503, str(exc)) from exc
         with self.state.runtime.lock:
+            if name == "rffmpeg" and remote_config != self.state.backends.remote_settings():
+                raise ApiError(409, "准入期间 rffmpeg 配置已修改，请重新提交任务")
             values = self.state.runtime.read()
-            execution = {"engine": name, "template_id": template["id"] if template else None,
+            execution = {"engine": name,
+                **({"remote_config": remote_config} if remote_config is not None else {}), "template_id": template["id"] if template else None,
                 "template_name": template["name"] if template else None,
                 "preset": document, "overrides": overrides, "settings": {
                 "job_timeout_seconds": values["job_timeout_seconds"],

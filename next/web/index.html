@@ -65,6 +65,7 @@
         <button type="button" data-settings-section="general" class="active" aria-current="page">常规与界面</button>
         <button type="button" data-settings-section="output">输出与文件</button>
         <button type="button" data-settings-section="queue">转换与队列</button>
+        <button type="button" data-settings-section="remote">rffmpeg 远程</button>
         <button type="button" data-settings-section="templates">编码默认值与模板</button>
         <button type="button" data-settings-section="notifications">完成通知</button>
         <button type="button" data-settings-section="maintenance">存储与维护</button>
@@ -94,6 +95,20 @@
             <label class="check"><input id="setting-auto-start" type="checkbox" /> 新任务自动启动</label>
             <label class="field"><span>单任务编码超时（秒，0 为不限）</span><input id="setting-timeout" type="number" min="0" max="86400" step="1" /></label>
             <p class="hint">降低并发不会中断在途任务。暂停进程仍占名额；继续在原进程恢复，服务重启后需重新编码。超时不计暂停时间。</p>
+          </section>
+          <section data-settings-panel="remote" class="settings-section" hidden>
+            <h3>rffmpeg 远程</h3><p class="settings-scope">可信管理员配置 · 保存到当前服务，用于新任务</p>
+            <p class="hint">先在服务 / 容器中安装 rffmpeg 及依赖，再填写其 FFmpeg 和 ffprobe 兼容入口。这里不配置 SSH 主机或私钥、不安装程序，也不接受命令参数。</p>
+            <label class="field"><span>FFmpeg 兼容入口</span><input id="setting-rffmpeg-bin" type="text" maxlength="1024" placeholder="/opt/rffmpeg/ffmpeg" autocomplete="off" spellcheck="false" /></label>
+            <label class="field"><span>ffprobe 兼容入口</span><input id="setting-rffprobe-bin" type="text" maxlength="1024" placeholder="/opt/rffmpeg/ffprobe" autocomplete="off" spellcheck="false" /></label>
+            <p class="hint">支持绝对 Linux 路径或单个 PATH 程序名；填写的是容器 / 服务内路径，不是 Windows 路径。</p>
+            <label class="field"><span>共享探测目录</span><input id="setting-remote-probe-dir" type="text" maxlength="1024" placeholder="/media/remote-probes" autocomplete="off" spellcheck="false" /></label>
+            <p class="hint">目录需已存在、可写且位于已配置的可写存储根内。本机与所有远端必须使用相同绝对路径访问输入、输出与临时文件。</p>
+            <p id="rffmpeg-config-state" class="hint" role="status"></p>
+            <button id="btn-check-rffmpeg" type="button" class="btn">检查已保存配置</button>
+            <p class="hint">保存不会执行远程命令。主动检查可能通过 wrapper 联系远端，只验证目录与版本响应，不证明远端编码或主机身份。</p>
+            <p id="rffmpeg-check-message" class="hint" role="status"></p><ul id="rffmpeg-check-results" class="hint"></ul>
+            <p class="settings-safety">三项同时清空并保存可停用；“恢复本类默认”恢复启动配置的草稿。运行态暂停不支持，取消 / 超时不代表远端已退出，隔离产物需管理员确认后清理。SSH、密钥和主机密钥校验由部署管理。</p>
           </section>
           <section data-settings-panel="templates" class="settings-section" hidden>
             <h3>编码默认值与模板</h3><p class="settings-scope">当前服务 · 模板只影响新建任务</p>

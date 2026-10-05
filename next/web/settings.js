@@ -7,9 +7,11 @@ var Settings = (() => {
   let prefs = {...defaults}, report = null, baseline = "", ready = false, section = "general";
   let request = 0, naming = 0, cleanup = null, transferBusy = false, maintenanceBusy = false;
   let cursor = null, eventsBusy = false, audio = null, channel = null;
+  let remoteBusy = false, remoteRequest = 0;
+  const remoteFields = {rffmpeg_bin:"setting-rffmpeg-bin",rffprobe_bin:"setting-rffprobe-bin",remote_probe_dir:"setting-remote-probe-dir"};
   const seen = new Set();
   const localFields = {refresh: "setting-refresh", filter: "setting-queue-filter", density: "setting-density", success: "setting-notify-success", failure: "setting-notify-failure", sound: "setting-notify-sound", desktop: "setting-notify-desktop"};
-  const groups = {general: ["refresh", "filter", "density"], notifications: ["success", "failure", "sound", "desktop"], output: ["default_output_root", "output_name_template", "output_collision_policy"], queue: ["max_concurrent_jobs", "auto_start", "job_timeout_seconds"], templates: ["default_task_template_id"]};
+  const groups = {general: ["refresh", "filter", "density"], notifications: ["success", "failure", "sound", "desktop"], output: ["default_output_root", "output_name_template", "output_collision_policy"], queue: ["max_concurrent_jobs", "auto_start", "job_timeout_seconds"], templates: ["default_task_template_id"], remote: Object.keys(remoteFields)};
 
   function validPrefs(raw) {
     const out = {...defaults};
@@ -40,7 +42,8 @@ var Settings = (() => {
     return {local, service: {max_concurrent_jobs: Number($("setting-concurrency").value), auto_start: $("setting-auto-start").checked,
       job_timeout_seconds: Number($("setting-timeout").value), default_output_root: choiceValue($("setting-output-root")),
       output_name_template: $("setting-name-template").value, default_task_template_id: choiceValue($("setting-default-template")) || null,
-      output_collision_policy: choiceValue($("setting-collision"))}};
+      output_collision_policy: choiceValue($("setting-collision")),
+      ...Object.fromEntries(Object.entries(remoteFields).filter(([,id])=>$(id)).map(([key,id])=>[key,$(id).value.trim()]))}};
   }
 
   function fillLocal(values) {
@@ -50,6 +53,7 @@ var Settings = (() => {
   }
 
   function fillService(values) {
+    for (const [key,id] of Object.entries(remoteFields)) if ($(id)) $(id).value = values[key] || "";
     $("setting-concurrency").value = values.max_concurrent_jobs;
     $("setting-auto-start").checked = values.auto_start;
     $("setting-timeout").value = values.job_timeout_seconds;
@@ -64,12 +68,41 @@ var Settings = (() => {
     $("settings-dirty").textContent = dirty() ? "有未保存的修改" : "";
     $("btn-save-settings").disabled = !ready || state.settingsSaving || transferBusy || maintenanceBusy;
     $("btn-reset-settings-section").disabled = !ready || state.settingsSaving || !groups[section];
+    if ($("btn-check-rffmpeg")) $("btn-check-rffmpeg").disabled = !ready || state.settingsSaving || remoteBusy;
+    if ($("rffmpeg-config-state")) {
+      const saved = Object.keys(remoteFields).some(key=>report?.values[key]);
+      const changed = Object.entries(remoteFields).some(([key,id])=>$(id)?.value.trim() !== (report?.values[key] || ""));
+      $("rffmpeg-config-state").textContent = (saved ? "已保存配置（可用性需检查）。" : "已保存状态：停用。") + (changed ? " 当前有未保存的远程配置修改。" : "");
+    }
   }
   function canClose() {
     if (state.settingsSaving || transferBusy || maintenanceBusy) return false;
     return !dirty() || confirm("设置尚未保存。放弃修改并关闭？");
   }
   function close() { if (canClose()) { request++; $("settings-drawer").close(); } }
+
+  function invalidateRemoteCheck() {
+    remoteRequest++;
+    if ($("rffmpeg-check-results")) $("rffmpeg-check-results").replaceChildren();
+    if ($("rffmpeg-check-message")) $("rffmpeg-check-message").textContent = "";
+  }
+
+  async function checkRemote() {
+    if (!ready || state.settingsSaving || remoteBusy) return;
+    if (dirty()) {$("rffmpeg-check-message").textContent = "请先保存设置，再检查已保存配置。"; return;}
+    const id = ++remoteRequest, openRequest = request;
+    remoteBusy = true; updateDirty();
+    $("rffmpeg-check-message").textContent = "正在检查目录与兼容版本入口，可能联系远端…";
+    $("rffmpeg-check-results").replaceChildren();
+    try {
+      const result = await api("/rffmpeg/check", {method:"POST",body:"{}"});
+      if (id !== remoteRequest || openRequest !== request || !$("settings-drawer").open || dirty()) return;
+      $("rffmpeg-check-message").textContent = ({passed:"基础检查通过。 ",failed:"检查未通过。 ",disabled:""}[result.status] || "") + result.message;
+      $("rffmpeg-check-results").replaceChildren(...(result.checks || []).map(item=>el("li",{text:(item.ok?"✓ ":"✗ ")+item.message})));
+    } catch (err) {
+      if (id === remoteRequest && openRequest === request && $("settings-drawer").open) $("rffmpeg-check-message").textContent = "检查失败：" + UI.error(err);
+    } finally {remoteBusy = false; updateDirty();}
+  }
 
   function selectSection(name) {
     section = name;
@@ -86,6 +119,7 @@ var Settings = (() => {
   async function open() {
     $("settings-drawer").showModal(); syncDialogLock();
     const id = ++request;
+    invalidateRemoteCheck();
     ready = false; baseline = ""; cleanup = null;
     $("settings-fields").disabled = true;
     $("settings-dirty").textContent = "";
@@ -125,6 +159,8 @@ var Settings = (() => {
     const fields = $("settings-fields");
     if (!fields.checkValidity()) {fields.reportValidity(); return;}
     const values = draft();
+    const remoteChanged = Object.keys(remoteFields).some(key=>(values.service[key] || "") !== (report.values[key] || ""));
+    invalidateRemoteCheck();
     state.settingsSaving = true; updateDirty(); fields.disabled = true;
     try {
       const saved = await api("/settings", {method:"POST", body:JSON.stringify({...values.service, expected_revision:report.revision})});
@@ -134,7 +170,18 @@ var Settings = (() => {
       try {localStorage.setItem(key, JSON.stringify(prefs));} catch {persistent = false;}
       applyPrefs(); state.queueFilter = prefs.filter; renderQueue(); startPolling();
       baseline = JSON.stringify(draft());
-      $("settings-message").textContent = persistent ? "设置已保存。并发立即生效；输出、超时与模板用于新任务。" : "服务设置已保存；浏览器存储不可用，界面与通知只在本次会话生效。";
+      if (remoteChanged) {
+        settingsChanged();
+        if (state.engineId === "rffmpeg") {
+          state.engineRequest++; state.encoderCatalog = null;
+          state.caps.engine = {available:false,notes:[]};
+          renderEngineStatus(state.caps.engine);
+          document.querySelectorAll(".encoder-control").forEach(renderEncoderControl);
+          updateActionButtons();
+          $("engine-choice-note").textContent = "远程配置已更新；请主动重新检测引擎，保存不会联系远端。";
+        }
+      }
+      $("settings-message").textContent = persistent ? "设置已保存。并发立即生效；输出、超时、模板与远程配置用于新任务。" : "服务设置已保存；浏览器存储不可用，界面与通知只在本次会话生效。";
     } catch (err) {
       $("settings-message").textContent = "保存失败，修改仍保留：" + UI.error(err);
     } finally {state.settingsSaving = false; fields.disabled = false; updateDirty();}
@@ -150,6 +197,7 @@ var Settings = (() => {
       for (const name of groups[section]) values.service[name] = report.defaults[name];
       fillService(values.service);
     }
+    invalidateRemoteCheck();
     updateDirty(); rootNote(); previewName(); permissionNote();
     $("settings-message").textContent = "本类已恢复默认草稿，保存后生效。模板和任务不会删除。";
   }
@@ -364,8 +412,10 @@ var Settings = (() => {
         }
       });
     });
-    $("settings-fields").addEventListener("input", updateDirty);
-    $("settings-fields").addEventListener("change", updateDirty);
+    const changed = () => {invalidateRemoteCheck(); updateDirty();};
+    $("settings-fields").addEventListener("input", changed);
+    $("settings-fields").addEventListener("change", changed);
+    $("btn-check-rffmpeg").addEventListener("click", checkRemote);
     $("setting-name-template").addEventListener("input", previewName);
     $("setting-output-root").addEventListener("change", rootNote);
     $("btn-reset-settings-section").addEventListener("click", resetSection);
@@ -385,5 +435,5 @@ var Settings = (() => {
     $("btn-preview-cleanup").addEventListener("click", previewCleanup);
     $("btn-confirm-cleanup").addEventListener("click", confirmCleanup);
   }
-  return {init, wire, open, save, close, canClose, dirty, selectSection, resetSection, previewName, refreshTemplates, removeTemplate, copyTemplate, exportTemplates, importFile, previewCleanup, confirmCleanup, pollEvents, validPrefs, refreshSeconds: () => prefs.refresh};
+  return {init, wire, open, save, checkRemote, close, canClose, dirty, selectSection, resetSection, previewName, refreshTemplates, removeTemplate, copyTemplate, exportTemplates, importFile, previewCleanup, confirmCleanup, pollEvents, validPrefs, refreshSeconds: () => prefs.refresh};
 })();

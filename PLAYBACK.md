@@ -34,7 +34,17 @@ rffprobe_bin = ""
 remote_probe_dir = ""
 ```
 
-新环境变量 `SPRINGHUB_FFMPEG`、`SPRINGHUB_FFPROBE`、`SPRINGHUB_RFFMPEG`、`SPRINGHUB_RFFPROBE` 可覆盖程序路径；旧 `CUTE_CAT_*` 前缀仍接受。API 请求不得指定程序路径、原始 argv、SSH 命令或凭据。
+新环境变量 `SPRINGHUB_FFMPEG`、`SPRINGHUB_FFPROBE`、`SPRINGHUB_RFFMPEG`、`SPRINGHUB_RFFPROBE` 可覆盖启动配置程序路径；旧 `CUTE_CAT_*` 前缀仍接受。任务 API 请求不得指定程序路径、原始 argv、SSH 命令或凭据。
+
+### 网页设置入口
+
+点击右上角 **系统设置 → rffmpeg 远程**，填写 FFmpeg 兼容入口、ffprobe 兼容入口和共享探测目录，点击“保存设置”。程序路径是 Linux 服务/容器内路径，支持绝对路径或单个 PATH 程序名，不接受命令参数。共享目录必须位于已配置的可写存储根内。
+
+网页配置存到 SQLite，覆盖 TOML/环境启动默认值，无需重启，重启后仍保留；不写回 TOML。“恢复本类默认”仅恢复启动默认草稿，保存后生效；三项同时清空保存可停用。保存及读取设置**不会执行 wrapper**，可以先保存尚未安装/挂载的部署配置。
+
+“检查已保存配置”需要先保存草稿，检查本机程序可执行性、共享目录/挂载/权限与固定 `-version` 响应，可能通过 wrapper 联系远端；不创建任务、不编码、不安装或建目录。检查通过不证明远端身份、路径一致或真实编码。切换引擎的完整能力检测仍需主动进行。
+
+新 rffmpeg 任务冻结创建时三项配置，不影响已排队或正在运行的任务；已有旧任务没有远程配置快照时使用当前配置。`GET /api/v1/config` 中 `engine` 是启动配置，`effective_rffmpeg` 是当前有效配置。`POST /api/v1/rffmpeg/check` 使用已保存配置（空对象请求），受 API token 鉴权，不接受草稿路径/argv。
 
 已有配置、请求、任务和模板未指定引擎时继续使用 HandBrake。新任务把实际引擎、有效 spec、模板身份与运行设置冻结到任务快照。修改模板不影响已排队任务。两套引擎不是参数完全等价的实现：
 

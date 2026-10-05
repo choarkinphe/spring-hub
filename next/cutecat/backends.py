@@ -4,6 +4,9 @@ from .ffmpeg_engine import FFmpegEngine
 from .ffmpeg_spec import build_ffmpeg_args
 from .spec import build_engine_args, SpecError
 from .admission import validate_encoders
+from .remote_settings import REMOTE_FIELDS, remote_values
+from dataclasses import replace
+import threading
 
 NAMES = ("handbrake", "ffmpeg", "rffmpeg")
 
@@ -16,17 +19,34 @@ def engine_name(value=None):
 
 
 class Backends:
-    def __init__(self, config, handbrake=None):
+    def __init__(self, config, handbrake=None, runtime=None):
+        self.config, self.runtime = config, runtime
+        self._lock = threading.Lock()
         self.engines = {"handbrake": handbrake or HandBrakeEngine(config.engine),
             "ffmpeg": FFmpegEngine(config.engine),
             "rffmpeg": FFmpegEngine(config.engine, remote=True, roots=config.storage_roots)}
 
-    def get(self, name=None):
-        return self.engines[engine_name(name)]
+    def remote_settings(self):
+        return remote_values(self.runtime.read()) if self.runtime else {key: getattr(self.config.engine, key) for key in REMOTE_FIELDS}
+
+    def get(self, name=None, *, remote_config=None):
+        name = engine_name(name)
+        if name != "rffmpeg":
+            return self.engines[name]
+        values = self.remote_settings() if remote_config is None else remote_config
+        if not isinstance(values, dict) or set(values) != set(REMOTE_FIELDS) or any(not isinstance(v, str) for v in values.values()):
+            raise SpecError("invalid rffmpeg configuration snapshot")
+        with self._lock:
+            current = self.engines[name]
+            if any(getattr(current.config, key) != values[key] for key in REMOTE_FIELDS):
+                current = FFmpegEngine(replace(self.config.engine, **values), remote=True, roots=self.config.storage_roots)
+                self.engines[name] = current
+            return current
 
     def report(self, refresh=False):
         result = []
-        for name, engine in self.engines.items():
+        for name in NAMES:
+            engine = self.get(name)
             caps = engine.probe(refresh=refresh)
             result.append({"id": name, "label": {"handbrake": "HandBrake", "ffmpeg": "FFmpeg 本机", "rffmpeg": "rffmpeg 远程 wrapper"}[name],
                 "capabilities": caps.as_dict(), "running_pause": name != "rffmpeg", "remote_exit_confirmed": name != "rffmpeg"})

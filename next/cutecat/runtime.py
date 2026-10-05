@@ -6,6 +6,7 @@ import threading
 from pathlib import PurePosixPath
 from .pathsafe import normalise_relative
 from .builtin_templates import list_templates
+from .remote_settings import REMOTE_FIELDS, validate_remote
 
 
 class SettingsConflict(ValueError):
@@ -23,6 +24,7 @@ class RuntimeSettings:
             "default_output_root": next((r.id for r in config.storage_roots if not r.read_only), ""),
             "output_name_template": "converted/{source}.{ext}", "default_task_template_id": None,
             "output_collision_policy": "reject",
+            **{key: getattr(config.engine, key) for key in REMOTE_FIELDS},
         }
         self.read()
 
@@ -55,6 +57,8 @@ class RuntimeSettings:
             identity = values["default_task_template_id"]
             if identity is not None and identity not in {t["id"] for t in list_templates(self.store)}:
                 raise ValueError("unknown default task template")
+            if any(values[key] != self.read()[key] for key in REMOTE_FIELDS):
+                validate_remote(values, self.config.storage_roots)
             self.store.set_settings({"runtime_settings": json.dumps(values), "runtime_revision": str(revision + 1)})
             return values
 
