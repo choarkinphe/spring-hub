@@ -51,6 +51,9 @@ const state = {
   engineId: "handbrake",
   engineRequest: 0,
   engineLoading: false,
+  engineAvailability: null,
+  availabilityRequest: 0,
+  availabilityLoading: false,
   retainedForm: null,
   defaultsApplied: false,
   jobCounts: {},
@@ -120,11 +123,17 @@ function openCreateTask() {
   if (!state.defaultsApplied && !state.selectedFile && !$("output-name").value && state.runtimeSettings) {
     state.defaultsApplied = true;
     setChoiceValue($("output-root-select"), state.runtimeSettings.default_output_root);
-    if (state.runtimeSettings.default_task_template_id) applyTaskTemplate(state.runtimeSettings.default_task_template_id);
+    if (state.runtimeSettings.default_task_template_id) {
+      const pendingDefault = state.runtimeSettings.default_task_template_id;
+      // Apply only after the fresh prerequisite check, without overwriting edits.
+      const revision = state.settingsRevision;
+      state.pendingDefaultTemplate = {id:pendingDefault,revision};
+    }
   }
   $("create-task-dialog").showModal();
   syncDialogLock();
   $("btn-select-file").focus();
+  return refreshEngineAvailability();
 }
 
 function closeCreateTask() {
@@ -252,7 +261,7 @@ function renderChoice(control, items, { value, labels = CHOICE_LABELS, tags = fa
   const previous = value !== undefined ? String(value) : choiceValue(control);
   const options = items.map((item) => typeof item === "string"
     ? { value: item, label: labels[item] || item }
-    : { value: String(item.value), label: item.label });
+    : { value: String(item.value), label: item.label, disabled: Boolean(item.disabled), reason:item.reason || "" });
   const selected = options.some((option) => option.value === previous) ? previous : options[0]?.value;
   const groupName = control.dataset.choiceName || `choice-${++choiceSequence}`;
   control.dataset.choiceName = groupName;
@@ -268,6 +277,7 @@ function renderChoice(control, items, { value, labels = CHOICE_LABELS, tags = fa
     control.classList.add("choice-dropdown");
     const select = el("select", { "aria-labelledby": control.dataset.labelId });
     fillSelect(select, options);
+    [...select.options].forEach((node,index)=>{node.disabled=Boolean(options[index].disabled);node.title=options[index].reason || "";});
     select.value = selected;
     control.appendChild(select);
     return;
@@ -276,7 +286,8 @@ function renderChoice(control, items, { value, labels = CHOICE_LABELS, tags = fa
   options.forEach((option, index) => {
     const input = el("input", { type: "radio", name: groupName, id: `${groupName}-${index}`, value: option.value });
     input.checked = option.value === selected;
-    control.appendChild(el("label", { class: "choice-option", for: input.id }, [
+    input.disabled = Boolean(option.disabled);
+    control.appendChild(el("label", { class: "choice-option", for: input.id, title:option.reason || "" }, [
       input, el("span", { text: option.label }),
     ]));
   });
@@ -307,10 +318,54 @@ function dictToOptions(dict) {
 
 /* ---------- engine selection ---------- */
 const ENGINE_LABELS = {handbrake:"HandBrake", ffmpeg:"FFmpeg 本机", rffmpeg:"rffmpeg 远程"};
+function engineSelectable(name = state.engineId) {
+  return !state.availabilityLoading && state.engineAvailability?.find(item=>item.id===name)?.selectable === true;
+}
+function renderEngineChoices() {
+  if (!$("engine-select")) return;
+  const labels={missing:"未安装",unconfigured:"未配置",unavailable:"不可用",available:"",unknown:"未知"};
+  renderChoice($("engine-select"),Object.entries(ENGINE_LABELS).map(([id,label])=>{
+    const item=state.engineAvailability?.find(item=>item.id===id);
+    const status=state.availabilityLoading?"检测中":labels[item?.status || "unknown"];
+    return {value:id,label:label+(status?" · "+status:""),disabled:!engineSelectable(id),reason:item?.reason || "引擎状态尚未确认，请刷新。"};
+  }),{value:state.engineId});
+  if ($("engine-availability-note")) $("engine-availability-note").textContent = state.availabilityLoading ? "正在检查本机安装与配置…" : state.engineAvailability ? state.engineAvailability.filter(item=>!item.selectable).map(item=>`${ENGINE_LABELS[item.id]}：${item.reason}`).join(" ") || "已安装引擎可选；实际编码能力仍会在提交时复验。" : "无法确认引擎状态，请刷新重试。";
+}
+async function refreshEngineAvailability() {
+  const request=++state.availabilityRequest;
+  state.availabilityLoading=true;renderEngineChoices();updateActionButtons();
+  try {
+    const report=await api("/engines/availability");
+    if(request!==state.availabilityRequest)return;
+    if (!Array.isArray(report.engines) || Object.keys(ENGINE_LABELS).some(id=>!report.engines.some(item=>item.id===id && typeof item.selectable==="boolean"))) throw new Error("引擎状态响应无效");
+    state.engineAvailability=report.engines;
+    if (!report.engines.find(item=>item.id===state.engineId)?.selectable) {
+      state.engineRequest++;
+      state.engineLoading=false;
+      if(state.validation)showValidation("stale","当前引擎不可用，请选择可用引擎并重新校验。",null);
+    }
+  } catch(err) {
+    if(request===state.availabilityRequest){
+      state.engineAvailability=null;state.engineRequest++;state.engineLoading=false;
+      if(state.validation)showValidation("stale","引擎状态未确认，请刷新后重新校验。",null);
+    }
+  } finally {
+    if(request===state.availabilityRequest){
+      state.availabilityLoading=false;renderEngineChoices();updateActionButtons();
+      const pending=state.pendingDefaultTemplate;state.pendingDefaultTemplate=null;
+      if(pending && pending.revision===state.settingsRevision && $("create-task-dialog").open)applyTaskTemplate(pending.id);
+    }
+  }
+}
 function engineQuery(refresh = false) {
   return state.engineId === "handbrake" ? (refresh ? "?refresh=1" : "") : `?engine=${state.engineId}${refresh ? "&refresh=1" : ""}`;
 }
 async function changeEngine(name, {resetPreset = true} = {}) {
+  if (!engineSelectable(name)) {
+    renderEngineChoices();
+    $("engine-choice-note").textContent = state.engineAvailability?.find(item=>item.id===name)?.reason || "引擎状态尚未确认，请先刷新。";
+    return;
+  }
   state.engineId = name;
   setChoiceValue($("engine-select"), name);
   const request = ++state.engineRequest;
@@ -319,6 +374,7 @@ async function changeEngine(name, {resetPreset = true} = {}) {
   state.scanRequest++; state.scan = null; state.scanning = false;
   if (resetPreset && name !== "handbrake") {
     state.presetSelection = {source:"custom",preset:null}; state.presetBaseline = null;
+    state.templateEditing=null;setChoiceValue($("task-template-select"),"");
     if (choiceValue($("dim-crop-mode")) === "auto") setChoiceValue($("dim-crop-mode"),"none");
   }
   $("btn-open-presets").disabled = name !== "handbrake";
@@ -419,6 +475,12 @@ function restoreForm(spec) {
 function applyTaskTemplate(identity) {
   const template=state.taskTemplates.find(t=>t.id===identity);
   if(!template)return;
+  const templateEngine = template.builtin ? state.engineId : (template.engine || "handbrake");
+  if (!engineSelectable(templateEngine)) {
+    setChoiceValue($("task-template-select"), "");
+    if ($("task-template-note")) $("task-template-note").textContent = "无法应用模板：" + (state.engineAvailability?.find(item=>item.id===templateEngine)?.reason || "模板引擎状态尚未确认，请刷新。");
+    return;
+  }
   const preset=template.spec.preset ? {id:template.preset_id,name:template.spec.preset} : null;
   state.presetSelection={source:preset?"imported":"custom",preset};
   restoreForm(template.form_spec);
@@ -453,9 +515,9 @@ function renderSettingsTemplates() {
     const row=el("div",{class:"template-row"},[el("strong",{text:template.name}),el("p",{class:"hint",text:template.description||""})]);
     const actions = el("div", {class:"actions"});
     row.appendChild(actions);
-    actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:template.builtin?"选用":"选用 / 编辑",onclick:()=>{
+    actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:template.builtin?"选用":"选用 / 编辑",onclick:async()=>{
       if (!Settings.canClose()) return;
-      $("settings-drawer").close();openCreateTask();applyTaskTemplate(template.id);
+      $("settings-drawer").close();await openCreateTask();applyTaskTemplate(template.id);
     }}));
     actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"复制",onclick:()=>Settings.copyTemplate(template)}));
     actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"导出",onclick:()=>Settings.exportTemplates([template.id])}));
@@ -479,6 +541,7 @@ async function boot() {
     renderFeatureMatrix(caps.features);
     await loadRoots();
     await loadRuntimeSettings();
+    await refreshEngineAvailability();
   } catch (err) {
     state.systemError = "无法读取系统状态：" + UI.error(err);
     $("system-message").textContent = state.systemError;
@@ -673,6 +736,7 @@ async function refreshSystem() {
     if (first) renderSpecOptions(caps.spec_options);
     else document.querySelectorAll(".encoder-control").forEach(renderEncoderControl);
     await loadRoots();
+    await refreshEngineAvailability();
     state.systemError = "";
     settingsChanged();
     renderSystemSummary();
@@ -1322,7 +1386,8 @@ function syncControls(target) {
 function updateActionButtons() {
   const busy = state.validating || state.queueing || state.engineLoading;
   $("btn-validate").disabled = busy || !state.caps;
-  $("btn-queue").disabled = busy || !state.selectedFile || !state.caps?.engine.available;
+  $("btn-queue").disabled = busy || !engineSelectable() || !state.selectedFile || !state.caps?.engine.available;
+  if ($("btn-refresh-engine-status")) $("btn-refresh-engine-status").disabled = state.availabilityLoading || state.posting;
   $("btn-create-task").disabled = busy || !state.caps;
   $("btn-close-create").disabled = state.posting;
   $("btn-select-file").disabled = state.posting;
@@ -1567,7 +1632,7 @@ function buildSpec(full = false) {
 
 /* ---------- jobs ---------- */
 async function queueJob() {
-  if (state.validating || state.queueing || !state.selectedFile || !state.caps?.engine.available) return;
+  if (state.validating || state.queueing || !engineSelectable() || !state.selectedFile || !state.caps?.engine.available) return;
   if (!$("output-name").value.trim()) { $("create-message").textContent = "请填写输出文件名。"; return; }
   const revision = state.settingsRevision;
   state.queueing = true;
@@ -1576,7 +1641,7 @@ async function queueJob() {
   try {
     const snapshot = captureSettings();
     validated = await prevalidate(snapshot, revision);
-    if (!validated) return;
+    if (!validated || !engineSelectable()) return;
     state.posting = true;
     updateActionButtons();
     $("create-message").textContent = "正在加入队列…";
@@ -1991,6 +2056,7 @@ function wireEvents() {
   $("btn-name-preview").addEventListener("click",previewOutputName);
   $("btn-save-template").addEventListener("click",saveTaskTemplate);
   $("engine-select").addEventListener("change",()=>changeEngine(choiceValue($("engine-select"))));
+  $("btn-refresh-engine-status").addEventListener("click",refreshEngineAvailability);
   $("task-template-select").addEventListener("change",()=>{
     const identity=choiceValue($("task-template-select"));
     if(identity)applyTaskTemplate(identity);
@@ -2109,6 +2175,7 @@ function wireEvents() {
 
 document.addEventListener("DOMContentLoaded", () => {
   initializeChoices();
+  renderEngineChoices();
   wireEvents();
   boot();
 });

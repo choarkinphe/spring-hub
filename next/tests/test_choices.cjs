@@ -72,6 +72,7 @@ function harness() {
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../web/ui-text.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../web/settings.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../web/app.js"), "utf8"), context);
+  vm.runInContext('globalThis.realRefreshEngineAvailability=refreshEngineAvailability; state.engineAvailability=Object.keys(ENGINE_LABELS).map(id=>({id,selectable:true,status:"available"})); refreshEngineAvailability=async()=>{}',context);
   const control = (id = "control") => {
     const node = new Element("div");
     node.dataset.labelId = `${id}-label`;
@@ -1105,6 +1106,113 @@ test("remote defaults reset only remote draft and does not discard other fields"
   assert.equal(n.get("setting-rffmpeg-bin").value,"toml-wrapper");
   assert.equal(n.get("setting-timeout").value,"42");
   assert.equal(c.Settings.dirty(),true);
+});
+
+test("engine choices disable missing engines and synthetic switching cannot bypass them", async () => {
+  const {context:c,control,controls:n}=settingsHarness();
+  control("engine-select");control("engine-choice-note");control("engine-availability-note");
+  vm.runInContext('state.engineAvailability=[{id:"handbrake",selectable:true,status:"available"},{id:"ffmpeg",selectable:false,status:"missing",reason:"未安装"},{id:"rffmpeg",selectable:false,status:"unconfigured",reason:"未配置"}]',c);
+  c.renderEngineChoices();
+  const radios=n.get("engine-select").querySelectorAll("input[type=radio]");
+  assert.equal(radios[0].disabled,false);assert.equal(radios[1].disabled,true);assert.equal(radios[2].disabled,true);
+  let calls=0;c.api=async()=>{calls++;};
+  await c.changeEngine("ffmpeg");
+  assert.equal(vm.runInContext('state.engineId',c),"handbrake");assert.equal(calls,0);
+  assert.match(n.get("engine-choice-note").textContent,/未安装/);
+});
+
+test("unavailable template engine cannot replace task draft", () => {
+  const {context:c,controls:n,control}=settingsHarness();control("task-template-note");
+  vm.runInContext('state.engineAvailability=[{id:"handbrake",selectable:true,status:"available"}]; state.taskTemplates=[{id:"remote",engine:"rffmpeg",spec:{},form_spec:{},name:"remote"}]',c);
+  const before=plain(c.buildSpec());c.applyTaskTemplate("remote");
+  assert.deepEqual(plain(c.buildSpec()),before);
+  assert.match(n.get("task-template-note").textContent,/无法应用/);
+});
+
+test("availability ignores stale responses and never silently changes selected engine", async () => {
+  const {context:c,control,controls:n}=settingsHarness();control("engine-select");control("engine-availability-note");
+  vm.runInContext('refreshEngineAvailability=realRefreshEngineAvailability; state.engineId="ffmpeg"',c);
+  const finishes=[];c.api=()=>new Promise(resolve=>finishes.push(resolve));
+  const first=c.refreshEngineAvailability();const second=c.refreshEngineAvailability();
+  finishes[1]({engines:[{id:"handbrake",selectable:true,status:"available"},{id:"ffmpeg",selectable:false,status:"missing"},{id:"rffmpeg",selectable:false,status:"unconfigured"}]});await second;
+  finishes[0]({engines:[{id:"handbrake",selectable:true},{id:"ffmpeg",selectable:true},{id:"rffmpeg",selectable:true}]});await first;
+  assert.equal(vm.runInContext('state.engineId',c),"ffmpeg");assert.equal(c.engineSelectable("ffmpeg"),false);
+  assert.equal(n.get("btn-queue").disabled,true);
+});
+
+test("creation summary groups choices and keeps template and playback fields accessible", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const summary = html.split('data-panel="summary">')[1].split('<!-- Dimensions -->')[0];
+  assert.equal((summary.match(/class="summary-section"/g) || []).length, 3);
+  for (const group of ["engine", "template", "output"]) {
+    assert.match(summary, new RegExp(`aria-labelledby="summary-${group}-title"`));
+    assert.match(summary, new RegExp(`id="summary-${group}-title"`));
+  }
+  const disclosures = [...summary.matchAll(/<details class="summary-disclosure">([\s\S]*?)<\/details>/g)];
+  assert.equal(disclosures.length, 2);
+  assert.match(disclosures[0][1], /保存当前编码为模板/);
+  for (const id of ["template-name", "template-description", "btn-save-template", "template-message"]) {
+    assert.match(disclosures[0][1], new RegExp(`id="${id}"`));
+  }
+  assert.match(disclosures[1][1], /网页播放参数/);
+  for (const id of ["engine-select", "task-template-select", "container-select", "output-root-select", "output-name", "stream-faststart", "stream-downscale", "stream-pixel", "stream-maxrate", "stream-buffer", "stream-keyframe"]) {
+    assert.equal((summary.match(new RegExp(`id="${id}"`, "g")) || []).length, 1);
+  }
+});
+
+function installSettingsHarness() {
+  const h = remoteSettingsHarness();
+  for (const id of ["ffmpeg-install-state", "ffmpeg-install-paths", "ffmpeg-install-message", "btn-install-ffmpeg", "btn-refresh-ffmpeg"]) h.control(id);
+  h.context.clearTimeout = () => {};
+  h.context.setTimeout = () => 1;
+  return h;
+}
+
+test("engine refresh is icon-only and FFmpeg shares the remote settings entry", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../web/index.html"), "utf8");
+  const button = html.match(/<button id="btn-refresh-engine-status"[\s\S]*?<\/button>/)[0];
+  assert.match(button, /aria-label="刷新引擎状态"/);
+  assert.match(button, /<svg[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(html, /id="btn-configure-rffmpeg"/);
+  assert.match(html, /data-settings-section="remote">FFmpeg 与远程/);
+  assert.match(html, /id="btn-install-ffmpeg"[^>]*disabled/);
+});
+
+test("FFmpeg installation requires confirmation, sends no paths and refreshes status", async () => {
+  const {context:c, controls:n} = installSettingsHarness();
+  await c.Settings.open();
+  const calls = [];
+  c.api = async (route, options) => {
+    calls.push({route, body:options?.body});
+    return {installed:false, supported:true, can_install:true, status:"idle", directory:"/data/tools"};
+  };
+  await c.Settings.refreshInstall();
+  assert.equal(n.get("btn-install-ffmpeg").disabled, false);
+  c.confirm = () => false;
+  await c.Settings.installFFmpeg();
+  assert.equal(calls.length, 1);
+  c.confirm = () => true;
+  await c.Settings.installFFmpeg();
+  assert.equal(calls[1].route, "/ffmpeg/install");
+  assert.deepEqual(JSON.parse(calls[1].body), {confirm:true});
+  assert.equal(calls[2].route, "/ffmpeg/install");
+});
+
+test("FFmpeg status ignores closed drawers and installation errors stay visible", async () => {
+  const {context:c, controls:n} = installSettingsHarness();
+  await c.Settings.open();
+  let finish;
+  c.api = () => new Promise(resolve => {finish=resolve;});
+  const pending = c.Settings.refreshInstall();
+  c.Settings.close();
+  finish({installed:true, status:"succeeded"}); await pending;
+  assert.notEqual(n.get("ffmpeg-install-state").textContent, "已安装 · undefined。");
+  c.api = async route => route === "/ffmpeg/install" ? {installed:false, supported:true, can_install:true, status:"idle"} : route === "/task-templates" ? {templates:[]} : {values:{},revision:0};
+  await c.Settings.open(); await c.Settings.refreshInstall();
+  c.confirm = () => true;
+  c.api = async () => {throw new Error("offline");};
+  await c.Settings.installFFmpeg();
+  assert.match(n.get("ffmpeg-install-message").textContent, /无法开始安装/);
 });
 
 test("numeric choice reads zero/empty without losing semantics", () => {

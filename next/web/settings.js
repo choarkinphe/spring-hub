@@ -8,6 +8,7 @@ var Settings = (() => {
   let request = 0, naming = 0, cleanup = null, transferBusy = false, maintenanceBusy = false;
   let cursor = null, eventsBusy = false, audio = null, channel = null;
   let remoteBusy = false, remoteRequest = 0;
+  let installReport = null, installBusy = false, installRequest = 0, installTimer = null;
   const remoteFields = {rffmpeg_bin:"setting-rffmpeg-bin",rffprobe_bin:"setting-rffprobe-bin",remote_probe_dir:"setting-remote-probe-dir"};
   const seen = new Set();
   const localFields = {refresh: "setting-refresh", filter: "setting-queue-filter", density: "setting-density", success: "setting-notify-success", failure: "setting-notify-failure", sound: "setting-notify-sound", desktop: "setting-notify-desktop"};
@@ -69,6 +70,7 @@ var Settings = (() => {
     $("btn-save-settings").disabled = !ready || state.settingsSaving || transferBusy || maintenanceBusy;
     $("btn-reset-settings-section").disabled = !ready || state.settingsSaving || !groups[section];
     if ($("btn-check-rffmpeg")) $("btn-check-rffmpeg").disabled = !ready || state.settingsSaving || remoteBusy;
+    renderInstall();
     if ($("rffmpeg-config-state")) {
       const saved = Object.keys(remoteFields).some(key=>report?.values[key]);
       const changed = Object.entries(remoteFields).some(([key,id])=>$(id)?.value.trim() !== (report?.values[key] || ""));
@@ -79,7 +81,7 @@ var Settings = (() => {
     if (state.settingsSaving || transferBusy || maintenanceBusy) return false;
     return !dirty() || confirm("设置尚未保存。放弃修改并关闭？");
   }
-  function close() { if (canClose()) { request++; $("settings-drawer").close(); } }
+  function close() { if (canClose()) { request++; stopInstallPolling(); $("settings-drawer").close(); } }
 
   function invalidateRemoteCheck() {
     remoteRequest++;
@@ -104,6 +106,73 @@ var Settings = (() => {
     } finally {remoteBusy = false; updateDirty();}
   }
 
+  function renderInstall() {
+    if (!$("ffmpeg-install-state")) return;
+    const data = installReport;
+    $("ffmpeg-install-state").textContent = data ? data.installed ? `已安装 · ${data.source}。` : data.supported ? "本机 FFmpeg / ffprobe 尚未就绪。" : "当前平台不支持应用目录安装。" : "尚未读取安装状态。";
+    $("ffmpeg-install-paths").textContent = data?.installed ? `FFmpeg：${data.ffmpeg}；ffprobe：${data.ffprobe}` : data ? `安装位置：${data.directory}` : "";
+    const running = data && ["starting","downloading","verifying","extracting","checking"].includes(data.status);
+    const progress = data?.status === "downloading" && data.total ? ` ${Math.floor(data.downloaded / data.total * 100)}%` : "";
+    $("ffmpeg-install-message").textContent = data ? (data.installed && data.status === "idle" ? "使用现有安装，不会下载或覆盖。" : data.message) + progress : "";
+    $("btn-install-ffmpeg").disabled = !ready || installBusy || !data?.can_install;
+    $("btn-install-ffmpeg").textContent = running || installBusy ? "安装中…" : data?.installed ? "FFmpeg 已安装" : data?.status === "failed" ? "重试安装 FFmpeg" : "一键安装 FFmpeg";
+    $("btn-refresh-ffmpeg").disabled = !ready || installBusy;
+  }
+
+  function stopInstallPolling() {
+    installRequest++;
+    if (installTimer !== null) clearTimeout(installTimer);
+    installTimer = null;
+  }
+
+  async function refreshInstall() {
+    if (!ready || !$('settings-drawer').open || !$('ffmpeg-install-state')) return;
+    const id = ++installRequest, opened = request;
+    if (installTimer !== null) clearTimeout(installTimer);
+    installTimer = null;
+    try {
+      const data = await api("/ffmpeg/install");
+      if (id !== installRequest || opened !== request || !$("settings-drawer").open) return;
+      const completed = data.installed && (!installReport?.installed || !engineSelectable("ffmpeg"));
+      installReport = data; renderInstall();
+      if (completed) {
+        await refreshEngineAvailability();
+        if (state.engineId === "ffmpeg") await refreshEncoders();
+      }
+      if (id === installRequest && opened === request && $("settings-drawer").open &&
+          ["starting","downloading","verifying","extracting","checking"].includes(data.status) && section === "remote") {
+        installTimer = setTimeout(refreshInstall, 1500);
+      }
+    } catch (err) {
+      if (id === installRequest && opened === request && $("settings-drawer").open) {
+        installReport = null; renderInstall();
+        $("ffmpeg-install-message").textContent = "无法读取安装状态：" + UI.error(err);
+      }
+    }
+  }
+
+  async function installFFmpeg() {
+    if (!ready || installBusy || !installReport?.can_install) return;
+    if (!confirm("下载并安装固定版本 FFmpeg / ffprobe 到当前服务数据目录？约 150 MB 下载，需要约 1.2 GiB 可用空间。不会使用 sudo 或修改宿主机。")) return;
+    const opened = request;
+    let failure = "";
+    installBusy = true; stopInstallPolling(); renderInstall();
+    try {
+      const data = await api("/ffmpeg/install", {method:"POST", body:JSON.stringify({confirm:true})});
+      if (opened !== request || !$("settings-drawer").open) return;
+      installReport = data;
+    } catch (err) {
+      failure = "无法开始安装：" + UI.error(err);
+    } finally {
+      installBusy = false;
+      if (opened === request && $("settings-drawer").open) {
+        renderInstall();
+        if (failure) $("ffmpeg-install-message").textContent = failure;
+        else await refreshInstall();
+      }
+    }
+  }
+
   function selectSection(name) {
     section = name;
     document.querySelectorAll("[data-settings-section]").forEach(button => {
@@ -113,12 +182,15 @@ var Settings = (() => {
     });
     document.querySelectorAll("[data-settings-panel]").forEach(panel => {panel.hidden = panel.dataset.settingsPanel !== name;});
     $("settings-content").scrollTop = 0;
+    stopInstallPolling();
+    if (name === "remote") refreshInstall();
     updateDirty();
   }
 
   async function open() {
     $("settings-drawer").showModal(); syncDialogLock();
     const id = ++request;
+    stopInstallPolling(); installReport = null;
     invalidateRemoteCheck();
     ready = false; baseline = ""; cleanup = null;
     $("settings-fields").disabled = true;
@@ -172,6 +244,7 @@ var Settings = (() => {
       baseline = JSON.stringify(draft());
       if (remoteChanged) {
         settingsChanged();
+        refreshEngineAvailability();
         if (state.engineId === "rffmpeg") {
           state.engineRequest++; state.encoderCatalog = null;
           state.caps.engine = {available:false,notes:[]};
@@ -416,6 +489,8 @@ var Settings = (() => {
     $("settings-fields").addEventListener("input", changed);
     $("settings-fields").addEventListener("change", changed);
     $("btn-check-rffmpeg").addEventListener("click", checkRemote);
+    $("btn-install-ffmpeg").addEventListener("click", installFFmpeg);
+    $("btn-refresh-ffmpeg").addEventListener("click", refreshInstall);
     $("setting-name-template").addEventListener("input", previewName);
     $("setting-output-root").addEventListener("change", rootNote);
     $("btn-reset-settings-section").addEventListener("click", resetSection);
@@ -435,5 +510,5 @@ var Settings = (() => {
     $("btn-preview-cleanup").addEventListener("click", previewCleanup);
     $("btn-confirm-cleanup").addEventListener("click", confirmCleanup);
   }
-  return {init, wire, open, save, checkRemote, close, canClose, dirty, selectSection, resetSection, previewName, refreshTemplates, removeTemplate, copyTemplate, exportTemplates, importFile, previewCleanup, confirmCleanup, pollEvents, validPrefs, refreshSeconds: () => prefs.refresh};
+  return {init, wire, open, save, checkRemote, refreshInstall, installFFmpeg, close, canClose, dirty, selectSection, resetSection, previewName, refreshTemplates, removeTemplate, copyTemplate, exportTemplates, importFile, previewCleanup, confirmCleanup, pollEvents, validPrefs, refreshSeconds: () => prefs.refresh};
 })();

@@ -65,7 +65,7 @@
         <button type="button" data-settings-section="general" class="active" aria-current="page">常规与界面</button>
         <button type="button" data-settings-section="output">输出与文件</button>
         <button type="button" data-settings-section="queue">转换与队列</button>
-        <button type="button" data-settings-section="remote">rffmpeg 远程</button>
+        <button type="button" data-settings-section="remote">FFmpeg 与远程</button>
         <button type="button" data-settings-section="templates">编码默认值与模板</button>
         <button type="button" data-settings-section="notifications">完成通知</button>
         <button type="button" data-settings-section="maintenance">存储与维护</button>
@@ -97,7 +97,14 @@
             <p class="hint">降低并发不会中断在途任务。暂停进程仍占名额；继续在原进程恢复，服务重启后需重新编码。超时不计暂停时间。</p>
           </section>
           <section data-settings-panel="remote" class="settings-section" hidden>
-            <h3>rffmpeg 远程</h3><p class="settings-scope">可信管理员配置 · 保存到当前服务，用于新任务</p>
+            <h3>FFmpeg 与远程</h3><p class="settings-scope">当前服务环境 · 本机引擎安装与远程配置</p>
+            <h4>FFmpeg 本机</h4>
+            <p id="ffmpeg-install-state" class="hint" role="status">正在读取本机安装状态…</p>
+            <p id="ffmpeg-install-paths" class="hint"></p>
+            <div class="actions"><button id="btn-install-ffmpeg" type="button" class="btn" disabled>一键安装 FFmpeg</button><button id="btn-refresh-ffmpeg" type="button" class="btn btn-small">刷新状态</button></div>
+            <p id="ffmpeg-install-message" class="hint" role="status"></p>
+            <p class="settings-safety">安装到服务数据目录，不使用 sudo、不修改宿主机、不覆盖已有可用 FFmpeg。Docker 镜像已内置，通常无需安装。支持 Linux x86_64 / ARM64，需要网络与约 1.2 GiB 可用空间；使用 BtbN 固定 GPL 构建并校验 SHA-256。安装状态读取不会下载或执行程序。</p>
+            <h4>rffmpeg 远程</h4><p class="settings-scope">可信管理员配置 · 保存到当前服务，用于新任务</p>
             <p class="hint">先在服务 / 容器中安装 rffmpeg 及依赖，再填写其 FFmpeg 和 ffprobe 兼容入口。这里不配置 SSH 主机或私钥、不安装程序，也不接受命令参数。</p>
             <label class="field"><span>FFmpeg 兼容入口</span><input id="setting-rffmpeg-bin" type="text" maxlength="1024" placeholder="/opt/rffmpeg/ffmpeg" autocomplete="off" spellcheck="false" /></label>
             <label class="field"><span>ffprobe 兼容入口</span><input id="setting-rffprobe-bin" type="text" maxlength="1024" placeholder="/opt/rffmpeg/ffprobe" autocomplete="off" spellcheck="false" /></label>
@@ -217,42 +224,67 @@
 
       <div class="tab-panels">
         <!-- Summary -->
-        <div class="tab-panel active" data-panel="summary">
+        <div class="tab-panel active summary-panel" data-panel="summary">
           <h3>摘要</h3>
-          <label class="field"><span>转码引擎</span><select id="engine-select"><option value="handbrake">HandBrake</option><option value="ffmpeg">FFmpeg 本机</option><option value="rffmpeg">rffmpeg 远程</option></select></label>
-          <p id="engine-choice-note" class="hint" role="status">引擎路径由管理员配置；不会自动回退到其他引擎。</p>
-          <label class="field"><span>编码任务模板</span><select id="task-template-select"></select></label>
-          <p id="task-template-note" class="hint" role="status">内置播放模板可直接选用，也可复制后编辑。</p>
-          <div class="grid-2"><label class="field"><span>模板名称</span><input id="template-name" type="text" maxlength="80" placeholder="例如：日常压缩" /></label><label class="field"><span>模板说明</span><input id="template-description" type="text" maxlength="500" /></label></div>
-          <button id="btn-save-template" class="btn btn-small" type="button">保存当前编码为模板</button><p id="template-message" class="hint" role="status"></p>
-          <div class="preset-summary">
-            <div>
-              <span class="preset-eyebrow" id="preset-current-source">自定义</span>
-              <strong id="preset-current-name">自定义参数</strong>
-              <p class="hint" id="preset-hint">使用下方各标签中的参数。</p>
+          <section class="summary-section" aria-labelledby="summary-engine-title">
+            <div class="summary-section-heading">
+              <h4 id="summary-engine-title">转码引擎</h4>
+              <button id="btn-refresh-engine-status" class="btn btn-icon" type="button" aria-label="刷新引擎状态" title="刷新引擎状态"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5" /><path d="M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3A7 7 0 0 0 17.9 17" /></svg></button>
             </div>
-            <button id="btn-open-presets" class="btn" type="button" aria-haspopup="dialog" aria-controls="preset-drawer">选择预设</button>
-          </div>
-          <label class="field">
-            <span>输出容器</span>
-            <select id="container-select"></select>
-          </label>
-          <details class="raw-info"><summary>网页播放参数</summary>
-            <label class="check"><input id="stream-faststart" type="checkbox" /> MP4 快速起播（faststart）</label>
-            <label class="check"><input id="stream-downscale" type="checkbox" /> 尺寸仅缩小，不放大</label>
-            <label class="field"><span>像素格式</span><select id="stream-pixel"><option value="">引擎默认</option><option value="yuv420p">8-bit 4:2:0（常见设备）</option><option value="yuv420p10le">10-bit 4:2:0</option></select></label>
-            <div class="grid-2"><label class="field"><span>最大码率（kbps）</span><input id="stream-maxrate" type="number" min="1" max="500000" step="1" /></label><label class="field"><span>缓冲（kbits）</span><input id="stream-buffer" type="number" min="1" max="1000000" step="1" /></label></div>
-            <label class="field"><span>关键帧间隔（帧）</span><input id="stream-keyframe" type="number" min="1" max="600" step="1" /></label>
-            <p class="hint">最大码率与缓冲需成对填写；预设基底不支持这些覆盖，请使用自定义参数或播放模板。</p>
-          </details>
-          <label class="field">
-            <span>输出文件名（相对路径）</span>
-            <input id="output-name" type="text" placeholder="converted/movie.mp4" />
-          </label>
-          <label class="field">
-            <span>输出存储位置</span>
-            <select id="output-root-select"></select>
-          </label>
+            <label class="field"><span class="sr-only">转码引擎</span><select id="engine-select"><option value="handbrake">HandBrake</option><option value="ffmpeg">FFmpeg 本机</option><option value="rffmpeg">rffmpeg 远程</option></select></label>
+            <p id="engine-availability-note" class="hint" role="status">正在确认引擎安装与配置；未安装或未配置的引擎不可选。</p>
+            <p id="engine-choice-note" class="hint" role="status">每个任务单独选择已安装的引擎；实际编码能力仍会复验，不自动回退。</p>
+          </section>
+
+          <section class="summary-section" aria-labelledby="summary-template-title">
+            <div class="summary-section-heading"><h4 id="summary-template-title">模板与预设</h4></div>
+            <label class="field"><span>编码任务模板</span><select id="task-template-select"></select></label>
+            <p id="task-template-note" class="hint" role="status">内置播放模板可直接选用，也可复制后编辑。</p>
+            <div class="preset-summary">
+              <div>
+                <span class="preset-eyebrow" id="preset-current-source">自定义</span>
+                <strong id="preset-current-name">自定义参数</strong>
+                <p class="hint" id="preset-hint">使用下方各标签中的参数。</p>
+              </div>
+              <button id="btn-open-presets" class="btn" type="button" aria-haspopup="dialog" aria-controls="preset-drawer">选择预设</button>
+            </div>
+            <details class="summary-disclosure">
+              <summary>保存当前编码为模板</summary>
+              <div class="summary-disclosure-body">
+                <div class="grid-2"><label class="field"><span>模板名称</span><input id="template-name" type="text" maxlength="80" placeholder="例如：日常压缩" /></label><label class="field"><span>模板说明</span><input id="template-description" type="text" maxlength="500" /></label></div>
+                <div class="actions"><button id="btn-save-template" class="btn btn-small" type="button">保存模板</button></div>
+                <p id="template-message" class="hint" role="status"></p>
+              </div>
+            </details>
+          </section>
+
+          <section class="summary-section" aria-labelledby="summary-output-title">
+            <div class="summary-section-heading"><h4 id="summary-output-title">输出设置</h4></div>
+            <label class="field">
+              <span>输出容器</span>
+              <select id="container-select"></select>
+            </label>
+            <label class="field">
+              <span>输出文件名（相对路径）</span>
+              <input id="output-name" type="text" placeholder="converted/movie.mp4" />
+            </label>
+            <label class="field">
+              <span>输出存储位置</span>
+              <select id="output-root-select"></select>
+            </label>
+            <details class="summary-disclosure"><summary>网页播放参数</summary>
+              <div class="summary-disclosure-body">
+                <div class="grid-2">
+                  <label class="check"><input id="stream-faststart" type="checkbox" /> MP4 快速起播（faststart）</label>
+                  <label class="check"><input id="stream-downscale" type="checkbox" /> 尺寸仅缩小，不放大</label>
+                </div>
+                <label class="field"><span>像素格式</span><select id="stream-pixel"><option value="">引擎默认</option><option value="yuv420p">8-bit 4:2:0（常见设备）</option><option value="yuv420p10le">10-bit 4:2:0</option></select></label>
+                <div class="grid-2"><label class="field"><span>最大码率（kbps）</span><input id="stream-maxrate" type="number" min="1" max="500000" step="1" /></label><label class="field"><span>缓冲（kbits）</span><input id="stream-buffer" type="number" min="1" max="1000000" step="1" /></label></div>
+                <label class="field"><span>关键帧间隔（帧）</span><input id="stream-keyframe" type="number" min="1" max="600" step="1" /></label>
+                <p class="hint">最大码率与缓冲需成对填写；预设基底不支持这些覆盖，请使用自定义参数或播放模板。</p>
+              </div>
+            </details>
+          </section>
         </div>
 
         <!-- Dimensions -->

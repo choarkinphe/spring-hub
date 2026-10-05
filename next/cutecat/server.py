@@ -90,6 +90,7 @@ from .builtin_templates import list_templates, find_template
 from .backends import Backends, engine_name, admit
 from .preparation import request_spec, prepare
 from .remote_settings import RemoteCheck
+from .ffmpeg_install import FFmpegInstall
 
 MAX_BODY_BYTES = 1_000_000
 
@@ -110,6 +111,7 @@ class AppState:
         self.runtime = RuntimeSettings(config, store)
         self.backends = Backends(config, engine, self.runtime)
         self.remote_check = RemoteCheck()
+        self.ffmpeg_install = FFmpegInstall(config, self.backends)
         self.maintenance = Maintenance(store)
         self.templates = TemplateBundles(store, engine)
         self.system_status = SystemStatus(config)
@@ -350,6 +352,26 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(400, str(exc)) from exc
                 return self.state.runtime.report()
 
+        if path == "/api/v1/ffmpeg/install":
+            if method == "GET":
+                return self.state.ffmpeg_install.status()
+            if method == "POST":
+                if not body or set(body) != {"confirm"} or body["confirm"] is not True:
+                    raise ApiError(400, "安装需明确确认，不接受下载地址、路径或命令参数")
+                # Empty-token deployments are local trusted setups, not a CSRF
+                # exception: cross-origin browser requests may never install code.
+                origin = self.headers.get("Origin")
+                if self.headers.get("Sec-Fetch-Site") == "cross-site" or (origin and
+                        urllib.parse.urlsplit(origin).netloc != self.headers.get("Host")):
+                    raise ApiError(403, "请从当前服务页面确认安装")
+                try:
+                    return self.state.ffmpeg_install.start()
+                except RuntimeError as exc:
+                    raise ApiError(409, str(exc)) from exc
+                except ValueError as exc:
+                    raise ApiError(400, str(exc)) from exc
+            raise ApiError(405, "method not allowed")
+
         if path == "/api/v1/rffmpeg/check" and method == "POST":
             if body:
                 raise ApiError(400, "配置检查仅使用已保存配置，不接受程序路径或命令参数")
@@ -438,6 +460,9 @@ class Handler(BaseHTTPRequestHandler):
                 "decoder_inventory": decoder_inventory(refresh),
                 "features": _feature_matrix(),
             }
+
+        if path == "/api/v1/engines/availability" and method == "GET":
+            return self.state.backends.availability()
 
         if path == "/api/v1/engines" and method == "GET":
             return self.state.backends.report(refresh)
