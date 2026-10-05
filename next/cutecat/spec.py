@@ -603,6 +603,36 @@ class FilterSpec:
 
 
 @dataclass
+class StreamingSpec:
+    faststart: bool = False
+    pixel_format: str | None = None
+    maxrate_kbps: int | None = None
+    buffer_kbps: int | None = None
+    keyframe_interval: int | None = None
+    only_downscale: bool = False
+
+    @classmethod
+    def from_dict(cls, data):
+        _reject_unknown("streaming", data, {"faststart", "pixel_format", "maxrate_kbps", "buffer_kbps", "keyframe_interval", "only_downscale"})
+        result = cls()
+        for key in ("faststart", "only_downscale"):
+            if key in data:
+                if type(data[key]) is not bool:
+                    raise SpecError(f"streaming.{key} must be boolean")
+                setattr(result, key, data[key])
+        if data.get("pixel_format") is not None:
+            result.pixel_format = _require_choice("streaming.pixel_format", data["pixel_format"], {"yuv420p", "yuv420p10le"})
+        for key, high in (("maxrate_kbps", 500000), ("buffer_kbps", 1000000), ("keyframe_interval", 600)):
+            if data.get(key) is not None:
+                if type(data[key]) is not int:
+                    raise SpecError(f"streaming.{key} must be integer")
+                setattr(result, key, _bounded_int("streaming." + key, data[key], 1, high))
+        if bool(result.maxrate_kbps) != bool(result.buffer_kbps):
+            raise SpecError("streaming maxrate_kbps and buffer_kbps must be set together")
+        return result
+
+
+@dataclass
 class TranscodeSpec:
     """The complete, validated request the engine will execute."""
 
@@ -618,6 +648,7 @@ class TranscodeSpec:
     filters: FilterSpec = field(default_factory=FilterSpec)
     #: Optional metadata the client wants stamped on the output.
     metadata: dict = field(default_factory=dict)
+    streaming: StreamingSpec = field(default_factory=StreamingSpec)
 
     @classmethod
     def from_dict(cls, data: dict) -> "TranscodeSpec":
@@ -625,7 +656,7 @@ class TranscodeSpec:
             raise SpecError("spec must be an object")
         _reject_unknown("spec", data, {
             "version", "preset", "container", "title", "video", "audio",
-            "subtitles", "chapters", "dimensions", "filters", "metadata",
+            "subtitles", "chapters", "dimensions", "filters", "metadata", "streaming",
         })
         spec = cls()
         if "version" in data:
@@ -648,6 +679,8 @@ class TranscodeSpec:
             spec.dimensions = DimensionSpec.from_dict(data["dimensions"] or {})
         if "filters" in data:
             spec.filters = FilterSpec.from_dict(data["filters"] or {})
+        if "streaming" in data:
+            spec.streaming = StreamingSpec.from_dict(data["streaming"])
         if "metadata" in data:
             spec.metadata = _safe_metadata(data["metadata"])
             if spec.metadata:
@@ -669,6 +702,7 @@ class TranscodeSpec:
             "dimensions": asdict(self.dimensions),
             "filters": asdict(self.filters),
             "metadata": self.metadata,
+            **({"streaming": asdict(self.streaming)} if self.streaming != StreamingSpec() else {}),
         }
 
 
@@ -886,6 +920,35 @@ def build_engine_args(spec: TranscodeSpec, *, overrides: dict | None = None, pre
         args.append("--markers=" + chapters.marker_file if chapters.marker_file else "--markers")
     elif chapters.mode == "auto":
         args.append("--markers")
+
+    stream = spec.streaming
+    if stream.faststart:
+        if spec.container not in ("mp4", "av_mp4"):
+            raise SpecError("faststart requires an explicit MP4 container")
+        args.append("--optimize")
+    if stream.only_downscale:
+        for key, flag in (("width", "-X"), ("height", "-Y")):
+            if getattr(dim, key):
+                original = "-w" if key == "width" else "-l"
+                args[args.index(original)] = flag
+    if stream.pixel_format:
+        ten_bit = "10bit" in video.encoder
+        if video.encoder not in ("x264", "x265", "x264_10bit", "x265_10bit") or ten_bit != (stream.pixel_format == "yuv420p10le"):
+            raise SpecError("HandBrake pixel format must match the selected x264/x265 bit-depth encoder")
+    if stream.maxrate_kbps or stream.keyframe_interval:
+        if video.encoder not in ("x264", "x265", "x264_10bit", "x265_10bit"):
+            raise SpecError("HandBrake streaming limits require x264/x265")
+        options = []
+        if stream.maxrate_kbps:
+            options += [f"vbv-maxrate={stream.maxrate_kbps}", f"vbv-bufsize={stream.buffer_kbps}"]
+        if stream.keyframe_interval:
+            options += [f"keyint={stream.keyframe_interval}", f"min-keyint={stream.keyframe_interval}", "scenecut=0"]
+        if "--encopts" in args:
+            args[args.index("--encopts") + 1] += ":" + ":".join(options)
+        else:
+            args += ["--encopts", ":".join(options)]
+    if overrides is not None and stream != StreamingSpec():
+        raise SpecError("streaming settings require custom parameters, not a HandBrake preset")
 
     if overrides is not None:
         # A preset is the base. Dataclass defaults must not become implicit

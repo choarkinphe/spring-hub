@@ -204,7 +204,10 @@
         <!-- Summary -->
         <div class="tab-panel active" data-panel="summary">
           <h3>摘要</h3>
+          <label class="field"><span>转码引擎</span><select id="engine-select"><option value="handbrake">HandBrake</option><option value="ffmpeg">FFmpeg 本机</option><option value="rffmpeg">rffmpeg 远程</option></select></label>
+          <p id="engine-choice-note" class="hint" role="status">引擎路径由管理员配置；不会自动回退到其他引擎。</p>
           <label class="field"><span>编码任务模板</span><select id="task-template-select"></select></label>
+          <p id="task-template-note" class="hint" role="status">内置播放模板可直接选用，也可复制后编辑。</p>
           <div class="grid-2"><label class="field"><span>模板名称</span><input id="template-name" type="text" maxlength="80" placeholder="例如：日常压缩" /></label><label class="field"><span>模板说明</span><input id="template-description" type="text" maxlength="500" /></label></div>
           <button id="btn-save-template" class="btn btn-small" type="button">保存当前编码为模板</button><p id="template-message" class="hint" role="status"></p>
           <div class="preset-summary">
@@ -219,6 +222,14 @@
             <span>输出容器</span>
             <select id="container-select"></select>
           </label>
+          <details class="raw-info"><summary>网页播放参数</summary>
+            <label class="check"><input id="stream-faststart" type="checkbox" /> MP4 快速起播（faststart）</label>
+            <label class="check"><input id="stream-downscale" type="checkbox" /> 尺寸仅缩小，不放大</label>
+            <label class="field"><span>像素格式</span><select id="stream-pixel"><option value="">引擎默认</option><option value="yuv420p">8-bit 4:2:0（常见设备）</option><option value="yuv420p10le">10-bit 4:2:0</option></select></label>
+            <div class="grid-2"><label class="field"><span>最大码率（kbps）</span><input id="stream-maxrate" type="number" min="1" max="500000" step="1" /></label><label class="field"><span>缓冲（kbits）</span><input id="stream-buffer" type="number" min="1" max="1000000" step="1" /></label></div>
+            <label class="field"><span>关键帧间隔（帧）</span><input id="stream-keyframe" type="number" min="1" max="600" step="1" /></label>
+            <p class="hint">最大码率与缓冲需成对填写；预设基底不支持这些覆盖，请使用自定义参数或播放模板。</p>
+          </details>
           <label class="field">
             <span>输出文件名（相对路径）</span>
             <input id="output-name" type="text" placeholder="converted/movie.mp4" />
@@ -334,6 +345,7 @@
           </div>
           <div class="grid-2">
             <label class="field"><span>帧率（帧/秒）</span><select id="video-framerate"></select></label>
+            <label class="check"><input id="video-peak" type="checkbox" /> 帧率作为上限（不提升低帧率素材）</label>
             <label class="check"><input id="video-two-pass" type="checkbox" /> 两遍编码</label>
             <label class="check"><input id="video-turbo" type="checkbox" /> 快速首遍</label>
           </div>

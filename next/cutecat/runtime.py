@@ -5,6 +5,7 @@ import string
 import threading
 from pathlib import PurePosixPath
 from .pathsafe import normalise_relative
+from .builtin_templates import list_templates
 
 
 class SettingsConflict(ValueError):
@@ -52,7 +53,7 @@ class RuntimeSettings:
                 raise ValueError("default output root must be writable")
             validate_name_template(values["output_name_template"])
             identity = values["default_task_template_id"]
-            if identity is not None and identity not in {t["id"] for t in self.store.list_templates()}:
+            if identity is not None and identity not in {t["id"] for t in list_templates(self.store)}:
                 raise ValueError("unknown default task template")
             self.store.set_settings({"runtime_settings": json.dumps(values), "runtime_revision": str(revision + 1)})
             return values

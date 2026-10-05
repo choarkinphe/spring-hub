@@ -105,6 +105,17 @@
 - WSL 262 Python / 55 Node通过，脚本/JSON配置/JS语法/git diff --check正常；覆盖新旧CLI版本、新变量优先/旧fallback、空令牌不继承、原数据名/偏好/bundle、字标/新色板及无旧蓝色硬编码。
 - 实测springhub-preview在18087 LISTEN，health与本地SVG均HTTP200、真实HandBrake 1.11；数据库仍/home/xiaohua/.cache/cute-cat-handbrake-preview-18087/cute-cat.db，任务统计未变化。页头/按钮#ff9900、背景#000、面板#111实测，测试通知显示SpringHub。桌面、375px七标签/六设置/预设、768px设置均无横溢出；没有提交新转码任务或更改用户设置。未声称GPU/Docker/远程盘验证。
 
+### 播放模板与多引擎（2026-10-05）
+
+- 新增 9 类只读播放模板，稳定 UUID、可复制/导出/默认选择，保留用户模板与旧 bundle。网页播放设置含 faststart、位深、码率缓冲/关键帧和仅缩小；模板应用/保存保留采样率与帧率上限。食品模板不裁边、不自动增艳。
+- 当前 Python 服务新增 FFmpeg/ffprobe 本机引擎及 rffmpeg 兼容入口，不恢复旧 Rust。引擎和有效参数在任务快照冻结，既有请求/任务默认为 HandBrake；API/CLI 共用队列、预校验/准入/安全发布。未知或无法等价映射参数明确拒绝。CLI 是 HTTP 客户端，不另开数据库/worker；token 从环境读取且不转发重定向。
+- rffmpeg 管理员预装，采用相同绝对共享路径；无 SSH/密钥网页管理。运行态暂停拒绝；取消/超时只保证阻止本机发布，不能证明远端已退出。失败/取消 staging 和不确定探测目录保留，需确认远端退出后清理。不声称 wrapper 内部 fallback/远端身份可由应用验证。
+- WSL HandBrake 1.11.0 和隔离提取的发行版 FFmpeg 8.0.1：两引擎各 9 模板共 18 编码产物通过，核对 H.264/HEVC、320×240 不放大、yuv420p、AAC/48kHz/静音、正时长和 moov 位于 mdat 前；FFmpeg 双遍实际执行并产生可扫描产物。工具为 `next/tools/verify_playback.py`；不是画质/设备全兼容验收。
+- 独立 18086 验收预览：WSL LISTEN、health HTTP200、CLI FFmpeg 任务 `c65fb569-536e-463a-a56a-c0997d4eec10` succeeded；HTTP HandBrake 任务 `733781cc-7d22-46c7-a98b-023e99eec2e3` 自动编号，首产物 SHA256 不变，两份 rescan 均 4 秒 H.264/320×240。网页两次 FFmpeg 食品模板任务成功，最后一次详情保留食品模板身份并正确显示 ×实时速度。
+- 浏览器确认模板说明/faststart 参数、引擎切换使校验过期、缺失 rffmpeg 禁止入队且显示远程限制、内置 9 模板无删除按钮，复制后 10 模板仅用户副本有删除。375px 创建与 768px 设置无横溢出，console/server 无错误、network 无失败请求。
+- 最后追加：FFmpeg 竖屏和非方形像素素材实测保持显示比例/方形输出像素，60fps降至不高于30fps；非阻塞 stdout/stderr 有界排空避免 wrapper 退出后继承管道卡住。严格回归 279 Python / 57 Node通过；最新 CLI 任务 `6eca2139-2cad-4289-a05d-edbe121fdde8` 经新执行器完成发布，4秒，模板身份正确。验收服务停止、临时启动配置撤销；用户历史媒体/设置未变。
+- 真实 rffmpeg 远端、GPU 编码、Docker 镜像及远程共享未验收；已实现 wrapper/残留隔离契约回归。不自动提交/推送、不接触用户生产媒体或配置。详见 `PLAYBACK.md`。
+
 ### 验证证据
 
 - WSL Ubuntu：`python3 -m unittest discover -s tests -t tests` 共 **240 项通过**；Node 的 `test_choices.cjs` 共 **47 项通过**。新增覆盖预设快照、同名身份、稳定 ID、v1 数据库升级、两阶段准入、检测未知与显式覆盖，以及 CLI 可选参数、滤镜/颜色/无损、音轨/SRT、显式重置、零值与前端 null payload。API、worker、Store、spec 回归覆盖同源/硬链接、输出抢占、取消/停机/超时、挂载丢失、附属文件路径与参数映射。

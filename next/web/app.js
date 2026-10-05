@@ -48,6 +48,10 @@ const state = {
   generatedName: "",
   settingsSaving: false,
   templateEditing: null,
+  engineId: "handbrake",
+  engineRequest: 0,
+  engineLoading: false,
+  retainedForm: null,
   defaultsApplied: false,
   jobCounts: {},
   queueFilter: "all",
@@ -301,6 +305,44 @@ function dictToOptions(dict) {
   return Object.entries(dict).map(([value, label]) => ({ value, label: `${label} (${value})` }));
 }
 
+/* ---------- engine selection ---------- */
+const ENGINE_LABELS = {handbrake:"HandBrake", ffmpeg:"FFmpeg 本机", rffmpeg:"rffmpeg 远程"};
+function engineQuery(refresh = false) {
+  return state.engineId === "handbrake" ? (refresh ? "?refresh=1" : "") : `?engine=${state.engineId}${refresh ? "&refresh=1" : ""}`;
+}
+async function changeEngine(name, {resetPreset = true} = {}) {
+  state.engineId = name;
+  setChoiceValue($("engine-select"), name);
+  const request = ++state.engineRequest;
+  state.engineLoading = true;
+  state.encoderCatalog = null;
+  state.scanRequest++; state.scan = null; state.scanning = false;
+  if (resetPreset && name !== "handbrake") {
+    state.presetSelection = {source:"custom",preset:null}; state.presetBaseline = null;
+    if (choiceValue($("dim-crop-mode")) === "auto") setChoiceValue($("dim-crop-mode"),"none");
+  }
+  $("btn-open-presets").disabled = name !== "handbrake";
+  $("engine-choice-note").textContent = name === "rffmpeg" ? "远程使用相同绝对共享路径；不支持运行态暂停。取消/超时不代表远端已退出，失败隔离目录需管理员确认后清理。" : "引擎路径由管理员配置；不会自动回退到其他引擎。";
+  document.querySelectorAll(".encoder-control").forEach(renderEncoderControl);
+  settingsChanged(); updatePresetSummary();
+  try {
+    const data = await api("/encoders" + engineQuery());
+    if (request !== state.engineRequest) return;
+    state.encoderCatalog = data.encoder_catalog;
+    state.decoderInventory = data.decoder_inventory;
+    state.caps.engine = data.engine;
+    renderEngineStatus(data.engine); renderSystemStatus();
+    document.querySelectorAll(".encoder-control").forEach(renderEncoderControl);
+  } catch (err) {
+    if (request === state.engineRequest) {
+      state.caps.engine = {available:false,notes:[String(err)]};
+      $("engine-choice-note").textContent = "引擎读取失败：" + UI.error(err);
+    }
+  } finally {
+    if (request === state.engineRequest) {state.engineLoading = false; updateActionButtons();}
+  }
+}
+
 /* ---------- runtime settings and task templates ---------- */
 async function loadRuntimeSettings() {
   const report = await api("/settings");
@@ -310,7 +352,7 @@ async function loadRuntimeSettings() {
 }
 
 function renderTemplateChoices() {
-  const options = [{value:"",label:"不使用模板"}, ...state.taskTemplates.map(t=>({value:t.id,label:t.name}))];
+  const options = [{value:"",label:"不使用模板"}, ...state.taskTemplates.map(t=>({value:t.id,label:(t.builtin?"内置 · ":"")+t.name}))];
   renderChoice($("task-template-select"), options);
   renderChoice($("setting-default-template"), options, {value:state.runtimeSettings?.default_task_template_id || ""});
 }
@@ -342,6 +384,15 @@ async function generateOutputName() {
 }
 
 function restoreForm(spec) {
+  state.retainedForm = JSON.parse(JSON.stringify(spec));
+  if ($("video-peak")) $("video-peak").checked = Boolean(spec.video?.peak_framerate);
+  if ($("stream-faststart")) {
+    const stream = spec.streaming || {};
+    $("stream-faststart").checked = Boolean(stream.faststart);
+    $("stream-downscale").checked = Boolean(stream.only_downscale);
+    setChoiceValue($("stream-pixel"),stream.pixel_format || "");
+    for (const [id,key] of [["stream-maxrate","maxrate_kbps"],["stream-buffer","buffer_kbps"],["stream-keyframe","keyframe_interval"]]) $(id).value = stream[key] ?? "";
+  }
   const choices={"container-select":["container"],"video-encoder":["video","encoder"],"video-quality-type":["video","quality_type"],
     "video-preset":["video","preset"],"video-tune":["video","tune"],"video-profile":["video","profile"],"video-level":["video","level"],"video-framerate":["video","framerate"],
     "dim-crop-mode":["dimensions","crop_mode"],"dim-anamorphic":["dimensions","anamorphic"],"dim-modulus":["dimensions","modulus"],
@@ -372,7 +423,11 @@ function applyTaskTemplate(identity) {
   state.presetSelection={source:preset?"imported":"custom",preset};
   restoreForm(template.form_spec);
   state.presetBaseline=template.baseline;
-  state.templateEditing=template.id;
+  state.templateEditing=template.builtin ? null : template.id;
+  setChoiceValue($("task-template-select"),template.id);
+  if ($("task-template-note")) $("task-template-note").textContent = (template.builtin ? "内置只读；修改后保存为新模板。 " : "") + (template.description || "");
+  const name = template.builtin ? state.engineId : (template.engine || "handbrake");
+  if (name !== state.engineId) changeEngine(name,{resetPreset:false});
   $("template-name").value=template.name;$("template-description").value=template.description||"";
   settingsChanged();updatePresetSummary();generateOutputName();
 }
@@ -381,7 +436,7 @@ async function saveTaskTemplate() {
   $("btn-save-template").disabled=true;
   try {
     const snapshot=captureSettings();
-    const payload={name:$("template-name").value.trim(),description:$("template-description").value,spec:snapshot.spec,preset_id:snapshot.preset_id,
+    const payload={engine:state.engineId,name:$("template-name").value.trim(),description:$("template-description").value,spec:snapshot.spec,preset_id:snapshot.preset_id,
       form_spec:buildSpec(true),baseline:state.presetBaseline||null,version:1};
     const saved=await api("/task-templates"+(state.templateEditing?"/"+state.templateEditing:""),{method:"POST",body:JSON.stringify(payload)});
     state.templateEditing=saved.id;
@@ -398,13 +453,13 @@ function renderSettingsTemplates() {
     const row=el("div",{class:"template-row"},[el("strong",{text:template.name}),el("p",{class:"hint",text:template.description||""})]);
     const actions = el("div", {class:"actions"});
     row.appendChild(actions);
-    actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"选用 / 编辑",onclick:()=>{
+    actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:template.builtin?"选用":"选用 / 编辑",onclick:()=>{
       if (!Settings.canClose()) return;
       $("settings-drawer").close();openCreateTask();applyTaskTemplate(template.id);
     }}));
     actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"复制",onclick:()=>Settings.copyTemplate(template)}));
     actions.appendChild(el("button",{class:"btn btn-small",type:"button",text:"导出",onclick:()=>Settings.exportTemplates([template.id])}));
-    actions.appendChild(el("button",{class:"btn btn-small btn-danger",type:"button",text:"删除",onclick:()=>Settings.removeTemplate(template)}));
+    if (!template.builtin) actions.appendChild(el("button",{class:"btn btn-small btn-danger",type:"button",text:"删除",onclick:()=>Settings.removeTemplate(template)}));
     $("settings-template-list").appendChild(row);
   }
 }
@@ -445,7 +500,7 @@ function renderSystemStatus() {
   }
   $("system-info").replaceChildren();
   const rows = [
-    ["转码引擎", engine.available ? `HandBrake ${engine.version || "版本未知"}` : "未检测到 HandBrakeCLI"],
+    ["转码引擎", engine.available ? `${ENGINE_LABELS[state.engineId]} ${engine.version || "版本未知"}` : `未检测到 ${ENGINE_LABELS[state.engineId]}`],
     ["编码器检测", engine.video_encoders_known && engine.audio_encoders_known ? "检测结果已知（不是任意素材兼容保证）" : "检测不完整或未知"],
   ];
   for (const [label, value] of rows) $("system-info").appendChild(el("div", {}, [el("dt", {text: label}), el("dd", {text: value})]));
@@ -577,10 +632,12 @@ function renderCodecStatus() {
 }
 
 async function refreshCodecs() {
+  const selectedEngine = state.engineId, request = state.engineRequest;
   $("btn-refresh-codecs").disabled = true;
   $("codec-message").textContent = "正在重新检测，可能需要数秒…";
   try {
-    const data = await api("/encoders?refresh=1");
+    const data = await api("/encoders" + engineQuery(true));
+    if (selectedEngine !== state.engineId || request !== state.engineRequest) return;
     state.encoderCatalog = data.encoder_catalog;
     state.decoderInventory = data.decoder_inventory;
     state.caps.engine = data.engine;
@@ -601,9 +658,16 @@ async function refreshSystem() {
     const caps = await api("/capabilities");
     const first = !state.caps;
     state.caps = caps;
-    state.encoderCatalog = caps.encoder_catalog;
-    state.decoderInventory = caps.decoder_inventory;
-    renderEngineStatus(caps.engine);
+    if (state.engineId === "handbrake") {
+      state.encoderCatalog = caps.encoder_catalog;
+      state.decoderInventory = caps.decoder_inventory;
+    } else {
+      const selected = await api("/encoders" + engineQuery());
+      state.caps.engine = selected.engine;
+      state.encoderCatalog = selected.encoder_catalog;
+      state.decoderInventory = selected.decoder_inventory;
+    }
+    renderEngineStatus(state.caps.engine);
     renderFeatureMatrix(caps.features);
     $("version-tag").textContent = "v" + caps.version;
     if (first) renderSpecOptions(caps.spec_options);
@@ -628,12 +692,12 @@ function renderEngineStatus(engine) {
   $("engine-banner").classList.add("hidden");
   if (engine.available) {
     pill.className = "pill pill-ok";
-    pill.textContent = `HandBrake ${engine.version || "?"}`;
+    pill.textContent = `${ENGINE_LABELS[state.engineId]} ${engine.version || "?"}`;
     pill.title = engine.version_string || "";
     // Detailed detection notes belong in the system drawer.
   } else {
     pill.className = "pill pill-bad";
-    pill.textContent = "未检测到 HandBrakeCLI";
+    pill.textContent = state.engineId === "handbrake" ? "未检测到 HandBrakeCLI" : `未检测到 ${ENGINE_LABELS[state.engineId]}`;
     pill.title = (engine.notes || []).join(" ");
     showBanner("error", "未找到转码引擎，无法加入队列。请在系统详情中查看检测信息。");
     $("btn-queue").disabled = true;
@@ -765,7 +829,7 @@ async function scanSource() {
   $("create-message").textContent = "";
   try {
     const data = await api("/probe", {
-      method: "POST", body: JSON.stringify({root: source.root, path: source.path}),
+      method: "POST", body: JSON.stringify({root: source.root, path: source.path, ...(state.engineId !== "handbrake" ? {engine:state.engineId} : {})}),
     });
     if (request !== state.scanRequest) return;
     state.scan = data.scan;
@@ -951,7 +1015,7 @@ function encoderInstalledLabel(encoder) {
   if (encoder.status === "unsupported") return "当前平台不支持此编码器";
   if (encoder.status === "not_installed") return "当前引擎不含（换引擎构建即可）";
   if (encoder.status === "passthrough_only" || encoder.device === "passthrough") return "不适用（直通或不编码）";
-  if (encoder.installed === true) return "已内置于当前 HandBrake";
+  if (encoder.installed === true) return `已内置于 ${ENGINE_LABELS[state.engineId]}`;
   return encoder.installed === false ? "当前未提供" : "无法确认";
 }
 
@@ -1063,12 +1127,15 @@ function selectEncoder(encoder) {
 
 async function refreshEncoders() {
   if (state.encodersLoading) return;
+  const selectedEngine = state.engineId;
+  const engineRequest = state.engineRequest;
   state.encodersLoading = true;
   state.encodersError = "";
   renderEncoderCards();
   try {
     // refresh=1 forces a real re-probe instead of the cached result.
-    const data = await api("/encoders?refresh=1");
+    const data = await api("/encoders" + engineQuery(true));
+    if (selectedEngine !== state.engineId || engineRequest !== state.engineRequest) return;
     state.encoderCatalog = data.encoder_catalog;
     state.decoderInventory = data.decoder_inventory;
     state.caps.engine = data.engine;
@@ -1253,7 +1320,7 @@ function syncControls(target) {
 }
 
 function updateActionButtons() {
-  const busy = state.validating || state.queueing;
+  const busy = state.validating || state.queueing || state.engineLoading;
   $("btn-validate").disabled = busy || !state.caps;
   $("btn-queue").disabled = busy || !state.selectedFile || !state.caps?.engine.available;
   $("btn-create-task").disabled = busy || !state.caps;
@@ -1290,6 +1357,8 @@ function captureSettings() {
   }
   const spec = buildSpec();
   return {
+    ...(state.engineId !== "handbrake" ? {engine:state.engineId} : {}),
+    ...($("task-template-select") && choiceValue($("task-template-select")) ? {template_id:choiceValue($("task-template-select")),spec_mode:"replace"} : {}),
     spec, preset_id: state.presetSelection.preset?.id || spec.preset || "custom",
     input: state.selectedFile ? { root: state.selectedFile.root, path: state.selectedFile.path } : null,
     output: { root: choiceValue($("output-root-select")), path: $("output-name").value.trim() },
@@ -1299,7 +1368,7 @@ function captureSettings() {
 async function prevalidate(snapshot, revision) {
   showValidation("pending", "正在校验参数…", null);
   const result = await api("/spec/validate", {
-    method: "POST", body: JSON.stringify({ spec: snapshot.spec, preset_id: snapshot.preset_id }),
+    method: "POST", body: JSON.stringify({ ...(snapshot.engine ? {engine:snapshot.engine} : {}), ...(snapshot.template_id ? {template_id:snapshot.template_id,spec_mode:snapshot.spec_mode} : {}), spec: snapshot.spec, preset_id: snapshot.preset_id }),
   });
   if (revision !== state.settingsRevision || JSON.stringify(snapshot) !== JSON.stringify(captureSettings())) {
     showValidation("stale", "设置已修改，本次校验结果已过期；请重新校验。", null);
@@ -1406,6 +1475,30 @@ function buildSpec(full = false) {
       marker_file: $("chap-file").value.trim() || null,
     },
   };
+  if ($("video-peak")) spec.video.peak_framerate = $("video-peak").checked;
+  // Preserve imported/template fields not represented by basic controls.
+  if (state.retainedForm) {
+    for (const section of ["video","dimensions","filters","audio","subtitles","chapters"]) {
+      const original = state.retainedForm[section] || {};
+      for (const [key,value] of Object.entries(original)) if (!(key in spec[section])) spec[section][key] = value;
+    }
+    spec.audio.tracks.forEach((track,index) => {
+      const original = state.retainedForm.audio?.tracks?.[index] || {};
+      for (const [key,value] of Object.entries(original)) {
+        if (["copy","none"].includes(track.encoder) && ["samplerate","gain","drc","mixdown","bitrate"].includes(key)) continue;
+        if (!(key in track)) track[key] = value;
+      }
+    });
+  }
+  if ($("stream-faststart")) {
+    const streaming = {faststart:$("stream-faststart").checked,only_downscale:$("stream-downscale").checked};
+    const pixel = choiceValue($("stream-pixel"));
+    if (pixel) streaming.pixel_format = pixel;
+    for (const [id,key] of [["stream-maxrate","maxrate_kbps"],["stream-buffer","buffer_kbps"],["stream-keyframe","keyframe_interval"]]) {
+      const value = numberOrNull(id); if (value !== null) streaming[key] = value;
+    }
+    if (streaming.faststart || streaming.only_downscale || Object.keys(streaming).length > 2) spec.streaming = streaming;
+  }
   const bitrateMode = ["abr", "vbr"].includes(spec.video.quality_type);
   if (bitrateMode || spec.video.quality_type === "lossless") delete spec.video.quality;
   if (!bitrateMode) {
@@ -1435,6 +1528,7 @@ function buildSpec(full = false) {
     }
   }
   if (!full && spec.preset && state.presetBaseline) {
+    if (spec.streaming) throw new Error("网页播放参数不能覆盖 HandBrake 预设；请选用自定义参数或播放模板。");
     const baseline = state.presetBaseline;
     const sparse = { version: 1, preset: spec.preset, title: 1 };
     if (spec.container !== baseline.container) sparse.container = spec.container;
@@ -1642,7 +1736,7 @@ function renderQueueJob(job) {
   fill.style.width = pct + "%";
   progress.appendChild(el("div", {class: "queue-progress-track", role: "progressbar", "aria-label": `${job.input.path} 转换进度`, "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(pct)}, [fill]));
   const active = ["probing", "running", "finalizing"].includes(job.status);
-  const timing = active ? `${job.speed != null ? `${job.speed} 帧/秒` : "速度待报告"} · ${job.eta_seconds != null ? `剩余 ${formatDuration(job.eta_seconds)}` : "剩余时间未知"}`
+  const timing = active ? `${job.speed != null ? `${job.speed} ${job.engine && job.engine !== "handbrake" ? "× 实时" : "帧/秒"}` : "速度待报告"} · ${job.eta_seconds != null ? `剩余 ${formatDuration(job.eta_seconds)}` : "剩余时间未知"}`
     : job.status === "succeeded" ? "转换完成，输出已保存" : job.status === "paused"
       ? (["probing", "running", "finalizing"].includes(job.paused_from) ? "原地暂停，继续后恢复处理" : "尚未执行，继续后进入队列")
     : job.status === "waiting" ? "等待手动启动" : job.status === "queued" ? "等待可用并发名额" : "任务已停止";
@@ -1794,6 +1888,8 @@ function renderJobDetail(job) {
   const grid = el("div", { class: "meta-grid" });
   const rows = [
     ["状态", JOB_STATUS_LABELS[job.status] || job.status],
+    ["引擎", ENGINE_LABELS[job.engine || "handbrake"]],
+    ...(job.template_name ? [["模板",job.template_name]] : []),
     ["预设", job.preset_name || job.preset_id],
     ["容器", job.container || "auto"],
     ["输入", job.input.path],
@@ -1813,7 +1909,7 @@ function renderJobDetail(job) {
   if($("detail-spec").textContent!==specText)$("detail-spec").textContent=specText;
   const pct = jobPercent(job);
   $("progress-bar").style.width = pct + "%";
-  const speed = job.speed != null ? ` · ${job.speed} 帧/秒` : "";
+  const speed = job.speed != null ? ` · ${job.speed} ${job.engine && job.engine !== "handbrake" ? "× 实时" : "帧/秒"}` : "";
   const eta = job.eta_seconds != null ? ` · 剩余 ${formatDuration(job.eta_seconds)}` : "";
   $("progress-label").textContent = `${pct}%${speed}${eta}`;
   $("btn-cancel").disabled = ["queued", "probing", "running", "finalizing"].includes(job.status) ? false : true;
@@ -1894,6 +1990,7 @@ function wireEvents() {
   $("btn-save-settings").addEventListener("click",saveRuntimeSettings);
   $("btn-name-preview").addEventListener("click",previewOutputName);
   $("btn-save-template").addEventListener("click",saveTaskTemplate);
+  $("engine-select").addEventListener("change",()=>changeEngine(choiceValue($("engine-select"))));
   $("task-template-select").addEventListener("change",()=>{
     const identity=choiceValue($("task-template-select"));
     if(identity)applyTaskTemplate(identity);

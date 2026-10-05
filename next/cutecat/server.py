@@ -52,7 +52,7 @@ from typing import Any
 from . import __version__
 from .config import AppConfig
 from .engine import EngineError, HandBrakeEngine
-from .admission import AdmissionError, validate_encoders
+from .admission import AdmissionError
 from .pathsafe import PathSafetyError, resolve_request, resolve_spec_files, validate_job_paths, assert_writable
 from .presets import (
     PresetError,
@@ -78,8 +78,6 @@ from .spec import (
     VIDEO_PROFILES,
     VIDEO_QUALITY_TYPES,
     VIDEO_TUNES,
-    build_engine_args,
-    prepare_job_preset,
 )
 from .store import Store
 from .system_status import SystemStatus
@@ -88,6 +86,9 @@ from .runtime import RuntimeSettings, SettingsConflict, output_name
 from .outputs import allocate_output, pending_paths, OutputConflict
 from .maintenance import Maintenance
 from .templates import TemplateBundles, validate_template
+from .builtin_templates import list_templates, find_template
+from .backends import Backends, engine_name, admit
+from .preparation import request_spec, prepare
 
 MAX_BODY_BYTES = 1_000_000
 
@@ -105,6 +106,7 @@ class AppState:
         self.config = config
         self.store = store
         self.engine = engine
+        self.backends = Backends(config, engine)
         self.runtime = RuntimeSettings(config, store)
         self.maintenance = Maintenance(store)
         self.templates = TemplateBundles(store, engine)
@@ -231,8 +233,12 @@ def _feature_matrix() -> list[dict]:
         ("docker", "容器镜像与部署", "已提供部署文件；当前无容器运行环境，未完成镜像构建和运行验证。"),
         ("advanced", "光盘菜单与多节点调度", "本版本不提供这些功能。"),
     ]
-    return [{**feature, "id": identity, "area_zh": area, "note_zh": note}
-            for feature, (identity, area, note) in zip(features, chinese)]
+    result = [{**feature, "id": identity, "area_zh": area, "note_zh": note}
+              for feature, (identity, area, note) in zip(features, chinese)]
+    result.append({"id": "playback", "area": "Playback templates and external API/CLI", "area_zh": "播放模板与外部调用",
+        "status": "implemented", "note": "Nine read-only MP4 templates; local FFmpeg and administrator-owned rffmpeg compatible entry points. HTTP/CLI share queue and safe publication.",
+        "note_zh": "9 类内置 MP4 模板、本机 FFmpeg 和外部 HTTP/CLI 已接入；rffmpeg 使用管理员配置的共享路径 wrapper，运行态暂停不支持，取消不证明远端退出。"})
+    return result
 
 
 # -- request handler -------------------------------------------------------
@@ -382,11 +388,13 @@ class Handler(BaseHTTPRequestHandler):
         match_template = re.fullmatch(r"/api/v1/task-templates(?:/([0-9a-fA-F\-]+))?", path)
         if match_template:
             identity = match_template.group(1)
-            templates = store.list_templates()
+            templates = list_templates(store)
             if identity and not any(t["id"] == identity for t in templates):
                 raise ApiError(404, "task template not found")
             if method == "GET" and not identity:
                 return {"templates": templates}
+            if identity and find_template(store, identity).get("builtin") and method in ("POST", "DELETE"):
+                raise ApiError(409, "built-in templates are read-only; copy to a user template")
             if method == "DELETE" and identity:
                 with self.state.runtime.lock:
                     store.delete_template(identity)
@@ -396,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
                     payload = validate_template(body or {})
                 except (ValueError, SpecError) as exc:
                     raise ApiError(400, str(exc)) from exc
-                self._prepare_spec(payload.get("spec", {}), payload.get("preset_id", "custom"))
+                self._prepare_spec(payload.get("spec", {}), payload.get("preset_id", "custom"), name=engine_name(payload.get("engine")))
                 return store.save_template(payload, identity)
 
         if path == "/api/v1/system/status" and method == "GET":
@@ -409,16 +417,25 @@ class Handler(BaseHTTPRequestHandler):
                 "engine": caps.as_dict(),
                 "ffprobe": self.state.engine.ffprobe_path(),
                 "config": cfg.as_public_dict(),
+                "engine_ids": ["handbrake", "ffmpeg", "rffmpeg"],
                 "spec_options": _spec_options(),
                 "encoder_catalog": self._encoder_catalog(caps),
                 "decoder_inventory": decoder_inventory(refresh),
                 "features": _feature_matrix(),
             }
 
+        if path == "/api/v1/engines" and method == "GET":
+            return self.state.backends.report(refresh)
+
         if path == "/api/v1/encoders" and method == "GET":
-            caps = self.state.engine.probe(refresh=refresh)
-            return {"engine": caps.as_dict(), "encoder_catalog": self._encoder_catalog(caps),
-                    "decoder_inventory": decoder_inventory(refresh)}
+            try:
+                name = engine_name((query.get("engine") or [None])[0])
+            except SpecError as exc:
+                raise ApiError(400, str(exc)) from exc
+            engine = self.state.backends.get(name)
+            caps = engine.probe(refresh=refresh)
+            return {"engine_id": name, "engine": caps.as_dict(), "encoder_catalog": self._encoder_catalog(caps) if name == "handbrake" else engine.catalog(caps),
+                    "decoder_inventory": decoder_inventory(refresh) if name == "handbrake" else {"status": "reported" if engine.decoder_items else "unknown", "items": engine.decoder_items, "note": "当前所选引擎的构建清单；源格式支持以实际扫描为准，不代表 HandBrake 内置库。"}}
 
         if path == "/api/v1/config" and method == "GET":
             return cfg.as_public_dict()
@@ -462,15 +479,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/spec/validate" and method == "POST":
             payload = body or {}
-            wrapped = "spec" in payload or "preset_id" in payload
-            if wrapped and set(payload) - {"spec", "preset_id"}:
-                raise ApiError(400, "validation accepts only spec and preset_id")
-            raw = payload.get("spec", {}) if wrapped else payload
-            spec, preset_id, preset_name, document, args = self._prepare_spec(
-                raw, payload.get("preset_id") if wrapped else None,
-            )
+            wrapped = any(key in payload for key in ("spec", "preset_id", "engine", "template_id"))
+            if wrapped and set(payload) - {"spec", "preset_id", "engine", "template_id", "spec_mode"}:
+                raise ApiError(400, "validation accepts only spec, preset_id, engine and template_id")
+            try:
+                name, raw, identity, template = request_spec(store, payload if wrapped else {"spec": payload})
+            except SpecError as exc:
+                raise ApiError(400, str(exc)) from exc
+            spec, preset_id, preset_name, document, args = self._prepare_spec(raw, identity, name=name)
             return {
-                "valid": True, "spec": spec.to_dict(), "args": args,
+                "valid": True, "engine": name, "template_id": template["id"] if template else None, "spec": spec.to_dict(), "args": args,
                 "preset_id": preset_id, "preset_name": preset_name,
                 "args_scope": "overrides" if document else "custom",
                 "checked": ["structure", "preset", "mapping"],
@@ -610,29 +628,23 @@ class Handler(BaseHTTPRequestHandler):
         if not resolved.is_file:
             raise ApiError(400, "path is not a file")
         try:
-            scan = self.state.engine.scan(str(resolved.absolute))
+            name = engine_name(body.get("engine"))
+            scan = self.state.backends.get(name).scan(str(resolved.absolute))
+        except SpecError as exc:
+            raise ApiError(400, str(exc)) from exc
         except EngineError as exc:
             raise ApiError(503, f"engine scan unavailable: {exc}") from exc
         return {"root": root_id, "path": resolved.relative, "scan": scan}
 
-    def _prepare_spec(self, raw: dict, preset_id=None, *, input_root=None):
+    def _prepare_spec(self, raw: dict, preset_id=None, *, input_root=None, name="handbrake"):
         """Share non-persistent preset/mapping preparation with prevalidation."""
         try:
-            spec = TranscodeSpec.from_dict(raw)
-            if input_root is not None:
-                resolve_spec_files(spec, list(self.state.config.storage_roots), input_root)
-            identity, name, document = resolve_job_preset(
-                store=self.state.store, engine=self.state.engine,
-                preset_id=preset_id, name=spec.preset,
-            )
-            document = prepare_job_preset(document, raw)
-            spec.preset = name
-            args = build_engine_args(spec, overrides=raw if document else None, preset=document)
+            return prepare(self.state.config, self.state.store, self.state.backends, raw, preset_id,
+                           name=name, input_root=input_root)
         except (SpecError, PresetError, PathSafetyError) as exc:
             raise ApiError(400, f"invalid spec: {exc}") from exc
         except EngineError as exc:
             raise ApiError(503, str(exc)) from exc
-        return spec, identity, name, document, args
 
     def _create_job(self, body: dict) -> dict:
         input_ref = body.get("input") or {}
@@ -661,19 +673,24 @@ class Handler(BaseHTTPRequestHandler):
         except PathSafetyError as exc:
             raise ApiError(400, str(exc)) from exc
 
-        overrides = body.get("spec") or {}
+        try:
+            name, overrides, identity, template = request_spec(self.state.store, body)
+        except SpecError as exc:
+            raise ApiError(400, str(exc)) from exc
         spec, preset_id, preset_name, document, args = self._prepare_spec(
-            overrides, body.get("preset_id"), input_root=input_path.root.id,
+            overrides, identity, input_root=input_path.root.id, name=name,
         )
         try:
-            validate_encoders(spec, self.state.engine.probe(), preset=document, overrides=overrides)
+            admit(self.state.backends.get(name), name, spec, preset=document, overrides=overrides)
         except AdmissionError as exc:
             raise ApiError(exc.status, str(exc)) from exc
         except EngineError as exc:
             raise ApiError(503, str(exc)) from exc
         with self.state.runtime.lock:
             values = self.state.runtime.read()
-            execution = {"preset": document, "overrides": overrides, "settings": {
+            execution = {"engine": name, "template_id": template["id"] if template else None,
+                "template_name": template["name"] if template else None,
+                "preset": document, "overrides": overrides, "settings": {
                 "job_timeout_seconds": values["job_timeout_seconds"],
                 "output_collision_policy": values["output_collision_policy"],
                 "requested_output": output_path.relative,

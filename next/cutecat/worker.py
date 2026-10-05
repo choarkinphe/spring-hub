@@ -13,15 +13,17 @@ from pathlib import Path
 
 from .config import AppConfig
 from .engine import EngineError, HandBrakeEngine
-from .admission import validate_encoders
 from .presets import resolve_job_preset, validate_preset_document
 from .pathsafe import (
     resolve_request, resolve_spec_files, validate_job_paths,
 )
-from .spec import TranscodeSpec, build_engine_args, prepare_job_preset
+from .spec import TranscodeSpec, prepare_job_preset
 from .store import Store
 from .runtime import RuntimeSettings
 from .outputs import allocate_output, pending_paths
+from .backends import Backends, engine_name, build_args, admit
+from contextlib import contextmanager
+import shutil
 
 
 class Worker:
@@ -29,6 +31,7 @@ class Worker:
         self.config = config
         self.store = store
         self.engine = engine
+        self.backends = Backends(config, engine)
         self.runtime = runtime or RuntimeSettings(config, store)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -77,7 +80,9 @@ class Worker:
         job = self.store.get_job(job_id)
         if job is None or job.status in ("waiting", "succeeded", "failed", "canceled", "interrupted") or (job.status == "paused" and not job.execution_active):
             return
-        self.store.add_log(job_id, "info", "job claimed")
+        name = engine_name((job.execution or {}).get("engine"))
+        engine = self.backends.get(name)
+        self.store.add_log(job_id, "info", f"job claimed (engine={name})")
         settings = (job.execution or {}).get("settings")
         timeout = settings["job_timeout_seconds"] if settings else self.runtime.read()["job_timeout_seconds"]
         refuse_overwrite = True if settings else self.config.engine.refuse_overwrite
@@ -100,7 +105,7 @@ class Worker:
             if document:
                 validate_preset_document(document)
             document = prepare_job_preset(document, overrides)
-            args = build_engine_args(spec, overrides=overrides if document else None, preset=document)
+            args = build_args(name, spec, overrides=overrides if document else None, preset=document)
             for flag, absolute in files.items():
                 if flag == "--markers":
                     index = next(i for i, arg in enumerate(args) if arg.startswith("--markers="))
@@ -132,13 +137,11 @@ class Worker:
                     validate_job_paths(input_path, current)
                     if current.absolute != output_path.absolute:
                         raise EngineError("output path changed")
-                    with tempfile.TemporaryDirectory(
-                        prefix=f".cute-cat-{job.id}-", dir=output_path.absolute.parent,
-                    ) as staging:
+                    with self._staging(job, output_path.absolute.parent, remote=name == "rffmpeg") as staging:
                         partial = Path(staging) / output_path.absolute.name
                         # Re-probe after waiting for the output lock: queued tasks
                         # must not reuse submission-time hardware readiness.
-                        validate_encoders(spec, self.engine.probe(refresh=True), preset=document, overrides=overrides)
+                        admit(engine, name, spec, preset=document, overrides=overrides, refresh=True)
                         self._check_cancel(job_id)
                         with tempfile.TemporaryDirectory(prefix="cute-cat-job-preset-") as preset_dir:
                             if document:
@@ -149,13 +152,13 @@ class Worker:
                                 index = args.index("--preset")
                                 args[index + 1] = "__cute_cat_job__"
                                 args[index:index] = ["--preset-import-file", str(snapshot)]
-                            self._encode_job(job, input_path.absolute, partial, args, timeout)
+                            self._encode_job(job, input_path.absolute, partial, args, timeout, engine=engine)
                         self._check_cancel(job_id)
                         self.store.set_status(job_id, "finalizing")
                         self.store.add_log(job_id, "info", "validating staged output")
                         if not partial.is_file() or partial.stat().st_size == 0:
                             raise EngineError("output validation failed: empty or missing file")
-                        scan = self.engine.scan(str(partial))
+                        scan = engine.scan(str(partial))
                         duration = _first_duration(scan)
                         if not scan.get("titles") or duration is None or duration <= 0:
                             raise EngineError("output validation failed: no playable title with positive duration")
@@ -214,10 +217,23 @@ class Worker:
         else:
             os.replace(partial, output)
 
-    def _encode_job(self, job, input_path: Path, partial: Path, args: list[str], timeout: int) -> None:
+    @contextmanager
+    def _staging(self, job, parent, *, remote=False):
+        directory = tempfile.mkdtemp(prefix=f".cute-cat-{job.id}-", dir=parent)
+        try:
+            yield directory
+        finally:
+            current = self.store.get_job(job.id)
+            if remote and (current is None or current.status != "succeeded"):
+                self.store.add_log(job.id, "warn", f"remote exit not confirmed; isolated staging retained: {directory}. Administrator must confirm remote process exit before cleanup.")
+            else:
+                shutil.rmtree(directory, ignore_errors=True)
+
+    def _encode_job(self, job, input_path: Path, partial: Path, args: list[str], timeout: int, *, engine=None) -> None:
+        engine = engine or self.engine
         self.store.set_status(job.id, "probing")
         try:
-            scan = self.engine.scan(str(input_path))
+            scan = engine.scan(str(input_path))
             self.store.update_job(
                 job.id, title_count=len(scan.get("titles") or []), duration_seconds=_first_duration(scan),
             )
@@ -228,7 +244,7 @@ class Worker:
         self.store.set_status(job.id, "running")
         self._check_cancel(job.id)
         self.store.update_job(job.id, args_json=json.dumps(args))
-        self.store.add_log(job.id, "info", "encoding: " + " ".join(self.engine.build_encode_command(
+        self.store.add_log(job.id, "info", "encoding: " + " ".join(engine.build_encode_command(
             input_path=str(input_path), output_path=str(partial), args=args,
         )))
 
@@ -240,7 +256,7 @@ class Worker:
                     eta_seconds=event.get("eta_seconds"),
                 )
 
-        self.engine.run_encode(
+        engine.run_encode(
             input_path=str(input_path), output_path=str(partial), args=args,
             on_event=on_event,
             should_cancel=lambda: self._stop.is_set() or self.store.cancel_requested(job.id),

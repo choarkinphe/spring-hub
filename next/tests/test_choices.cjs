@@ -1004,6 +1004,43 @@ test("SpringHub theme and branding keep legacy preference identities", () => {
   assert.match(settings,/cute-cat\.notifications\.v1/);
 });
 
+test("playback fields and audio samplerate survive template application and editing", () => {
+  const {context:c,controls:n,control} = settingsHarness();
+  for (const id of ["stream-faststart","stream-downscale","stream-maxrate","stream-buffer","stream-keyframe","task-template-note"]) control(id);
+  c.renderChoice(control("stream-pixel"),["","yuv420p","yuv420p10le"]);
+  c.renderChoice(n.get("task-template-select"),["builtin"]);
+  const form = plain(c.buildSpec(true));
+  form.video.quality=19;
+  form.streaming={faststart:true,only_downscale:true,pixel_format:"yuv420p",maxrate_kbps:5000,buffer_kbps:10000,keyframe_interval:60};
+  form.audio.tracks=[{encoder:"aac",source:"auto",samplerate:"48000",mixdown:"stereo",bitrate:"128"}];
+  vm.runInContext('state.taskTemplates='+JSON.stringify([{id:"builtin",builtin:true,name:"食品",description:"保留细节",spec:form,form_spec:form,baseline:null}]),c);
+  c.applyTaskTemplate("builtin");
+  assert.equal(vm.runInContext('state.templateEditing',c),null);
+  const built=plain(c.buildSpec());
+  assert.deepEqual(built.streaming,form.streaming);
+  assert.equal(built.audio.tracks[0].samplerate,"48000");
+  assert.match(n.get("task-template-note").textContent,/内置只读/);
+});
+
+test("engine switch ignores late capability responses and invalidates validation", async () => {
+  const {context:c,controls:n,control} = settingsHarness();
+  c.renderChoice(control("engine-select"),["handbrake","ffmpeg","rffmpeg"]);
+  for (const id of ["engine-choice-note","btn-open-presets"]) control(id);
+  vm.runInContext('state.validation={status:"passed"}',c);
+  const finishes=[];
+  c.api=()=>new Promise(resolve=>finishes.push(resolve));
+  const first=c.changeEngine("ffmpeg");
+  const second=c.changeEngine("rffmpeg");
+  assert.equal(n.get("btn-queue").disabled,true);
+  finishes[1]({engine:{available:false,notes:[]},encoder_catalog:{video:[],audio:[]}});await second;
+  finishes[0]({engine:{available:true},encoder_catalog:{video:[{id:"x264"}]}});await first;
+  assert.equal(vm.runInContext('state.engineId',c),"rffmpeg");
+  assert.equal(vm.runInContext('state.caps.engine.available',c),false);
+  assert.equal(n.get("spec-validation").dataset.status,"stale");
+  assert.equal(n.get("btn-open-presets").disabled,true);
+  assert.match(n.get("engine-choice-note").textContent,/不支持运行态暂停/);
+});
+
 test("numeric choice reads zero/empty without losing semantics", () => {
   const { context, control } = harness();
   const node = control("dim-modulus");

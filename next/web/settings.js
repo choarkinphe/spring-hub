@@ -209,7 +209,7 @@ var Settings = (() => {
     if (transferBusy) return;
     transferBusy = true; updateDirty();
     try {
-      const payload = Object.fromEntries(Object.entries(template).filter(([k]) => k !== "id"));
+      const payload = Object.fromEntries(Object.entries(template).filter(([k]) => !["id","builtin","slug","supported_engines"].includes(k)));
       payload.name = (template.name + " 副本").slice(0,80);
       await api("/task-templates", {method:"POST",body:JSON.stringify(payload)});
       await refreshTemplates();

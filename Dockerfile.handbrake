@@ -24,7 +24,7 @@ COPY next/springhub ./springhub
 COPY next/tests ./tests
 COPY next/tools ./tools
 RUN python -m compileall -q cutecat && \
-    PYTHONPATH=/src:/src/tests python -m unittest discover -s tests -t tests 2>&1 | tail -5
+    PYTHONPATH=/src:/src/tests python -m unittest discover -s tests -t tests
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime.
@@ -35,6 +35,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       handbrake-cli \
+      ffmpeg \
+      openssh-client \
       ca-certificates \
       tini \
       wget \

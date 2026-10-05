@@ -2,10 +2,12 @@
 import copy
 import json
 import uuid
-from .spec import TranscodeSpec, build_engine_args, prepare_job_preset
+from .spec import TranscodeSpec, prepare_job_preset
 from .presets import resolve_job_preset, validate_preset_document, PresetError
+from .builtin_templates import list_templates
+from .backends import engine_name, build_args
 
-FIELDS = {"name", "description", "spec", "preset_id", "form_spec", "baseline", "version"}
+FIELDS = {"name", "description", "spec", "preset_id", "form_spec", "baseline", "version", "engine"}
 
 
 def validate_template(payload):
@@ -13,6 +15,7 @@ def validate_template(payload):
         raise ValueError("unknown template field")
     if type(payload.get("version", 1)) is not int or payload.get("version", 1) != 1:
         raise ValueError("unsupported template version")
+    engine_name(payload.get("engine"))
     name, description = payload.get("name"), payload.get("description", "")
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or not isinstance(description, str) or len(description) > 500:
         raise ValueError("invalid template name/description")
@@ -32,7 +35,7 @@ class TemplateBundles:
     def export(self, payload):
         if set(payload) != {"ids"} or not isinstance(payload["ids"], list) or not 1 <= len(payload["ids"]) <= 100:
             raise ValueError("export requires 1..100 template ids")
-        known = {t["id"]: t for t in self.store.list_templates()}
+        known = {t["id"]: t for t in list_templates(self.store)}
         result = []
         for identity in payload["ids"]:
             if not isinstance(identity, str) or identity not in known:
@@ -41,6 +44,8 @@ class TemplateBundles:
             template = validate_template(template)
             document = None
             if template["spec"].get("preset"):
+                if engine_name(template.get("engine")) != "handbrake":
+                    raise ValueError("HandBrake preset cannot be exported for a different engine")
                 _, _, document = resolve_job_preset(self.store, self.engine, template.get("preset_id"), template["spec"]["preset"])
                 presets = validate_preset_document(document)
                 if len(presets) != 1:
@@ -72,6 +77,8 @@ class TemplateBundles:
                 document = entry["preset_document"]
                 name = template["spec"].get("preset")
                 if name:
+                    if engine_name(template.get("engine")) != "handbrake":
+                        raise ValueError("HandBrake preset dependency requires handbrake engine")
                     presets = validate_preset_document(document)
                     if name not in {p.name for p in presets}:
                         raise PresetError("preset dependency does not match template")
@@ -86,7 +93,7 @@ class TemplateBundles:
                     raise ValueError("custom template cannot include a preset dependency")
                 spec = TranscodeSpec.from_dict(template["spec"])
                 effective = prepare_job_preset(document, template["spec"])
-                build_engine_args(spec, overrides=template["spec"] if document else None, preset=effective)
+                build_args(engine_name(template.get("engine")), spec, overrides=template["spec"] if document else None, preset=effective)
                 prepared.append((template, document))
             except (ValueError, PresetError) as exc:
                 raise ValueError(f"template {index + 1}: {exc}") from exc

@@ -19,8 +19,19 @@ api_token = ""
 [engine]
 # Path to (or name of) the real HandBrakeCLI binary.
 handbrake_bin = "HandBrakeCLI"
-# Optional ffprobe used only for an informational cross-check; not required.
+# Local FFmpeg requires both entry points. HandBrake does not require ffprobe.
+ffmpeg_bin = "ffmpeg"
 ffprobe_bin = "ffprobe"
+# Optional administrator-installed rffmpeg compatible ffmpeg/ffprobe entry points.
+# Leave empty to disable. These must accept ordinary FFmpeg/ffprobe argv.
+rffmpeg_bin = ""
+rffprobe_bin = ""
+# Existing writable directory within a configured storage root, shared at the
+# SAME absolute path on all remote hosts. Also required for capability probes.
+remote_probe_dir = ""
+# Example: /opt/rffmpeg/ffmpeg, /opt/rffmpeg/ffprobe, /media/remote-probes.
+# SSH hosts/keys/known_hosts and wrapper fallback policy are administrator-owned.
+# No remote running pause; cancellation does not prove remote process exit.
 # How many encodes may run at once.
 max_concurrent_jobs = 1
 # Refuse to overwrite an existing output file.

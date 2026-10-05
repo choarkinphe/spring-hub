@@ -1,9 +1,9 @@
 """HandBrakeCLI integration: capability probe, scan parsing, and encoding.
 
-Everything here shells out to the real ``HandBrakeCLI`` binary. There is **no**
-FFmpeg-based imitation of transcoding in this package — ``ffprobe`` is used
-only for an optional, clearly-labelled metadata cross-check and is never
-required for a job to run.
+Everything here shells out to the real ``HandBrakeCLI`` binary. The separate
+``ffmpeg_engine`` module executes FFmpeg/rffmpeg tasks; it does not emulate
+HandBrake presets. ``ffprobe`` remains optional for HandBrake tasks and required
+for FFmpeg-compatible tasks.
 
 The exact CLI surface used (stable across HandBrake 1.x):
 

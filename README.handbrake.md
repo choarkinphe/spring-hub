@@ -1,5 +1,7 @@
 # SpringHub — HandBrake edition
 
+> 本文记录 HandBrake 的详细协议。新版另提供本机 FFmpeg、管理员配置的 rffmpeg 兼容入口、9 类内置播放模板与 HTTP/CLI 外部调用；新增契约和限制见 [PLAYBACK.md](PLAYBACK.md)。旧 Rust/FFmpeg 服务仍已退役，本次新增的是当前 Python 服务内的独立引擎，不迁移旧 Rust 数据库。
+
 A self-hosted web workbench that drives the **real HandBrakeCLI**. This is the
 only supported implementation: the legacy Rust/FFmpeg service, web pages and
 deployment entrypoints have been removed. Source and native web UI live under

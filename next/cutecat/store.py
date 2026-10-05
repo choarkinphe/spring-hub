@@ -136,7 +136,8 @@ class Job:
         result = []
         if self.status == "paused" or (self.status in {"waiting", "failed", "canceled", "interrupted"} and not active):
             result.append("start")
-        if self.status in {"waiting", "queued"} | ACTIVE_STATUSES and not self.pause_requested:
+        remote = (self.execution or {}).get("engine") == "rffmpeg"
+        if self.status in {"waiting", "queued"} | ACTIVE_STATUSES and not self.pause_requested and not (remote and active):
             result.append("pause")
         if self.status not in TERMINAL_STATUSES:
             result.append("cancel")
@@ -149,6 +150,9 @@ class Job:
             "id": self.id,
             "input": {"root": self.input_root, "path": self.input_path},
             "output": {"root": self.output_root, "path": self.output_path},
+            "engine": (self.execution or {}).get("engine", "handbrake"),
+            "template_id": (self.execution or {}).get("template_id"),
+            "template_name": (self.execution or {}).get("template_name"),
             "preset_id": self.preset_id,
             "preset_name": self.preset_name,
             "container": self.container,

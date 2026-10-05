@@ -41,7 +41,8 @@ api_token = ""
 
 [engine]
 handbrake_bin = "$ENGINE"
-ffprobe_bin = ""
+ffmpeg_bin = "${SPRINGHUB_FFMPEG:-ffmpeg}"
+ffprobe_bin = "${SPRINGHUB_FFPROBE:-ffprobe}"
 
 [[storage_roots]]
 id = "media"

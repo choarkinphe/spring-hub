@@ -36,7 +36,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_arg_parser().parse_args(argv)
+    from .client import COMMANDS, main as client_main
+    supplied = list(sys.argv[1:] if argv is None else argv)
+    if supplied and supplied[0] in COMMANDS:
+        return client_main(supplied)
+    args = _build_arg_parser().parse_args(supplied)
 
     try:
         config = load_config(args.config)

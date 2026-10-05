@@ -46,6 +46,11 @@ class StorageRoot:
 class EngineConfig:
     handbrake_bin: str = "HandBrakeCLI"
     ffprobe_bin: str = "ffprobe"
+    ffmpeg_bin: str = "ffmpeg"
+    rffmpeg_bin: str = ""
+    rffprobe_bin: str = ""
+    # Existing absolute directory visible at the same path on every remote host.
+    remote_probe_dir: str = ""
     max_concurrent_jobs: int = 1
     #: Extra fixed arguments appended to every encode, *before* the structured
     #: whitelist. Kept empty by default; never sourced from a request.
@@ -59,6 +64,10 @@ class EngineConfig:
         return {
             "handbrake_bin": self.handbrake_bin,
             "ffprobe_bin": self.ffprobe_bin,
+            "ffmpeg_bin": self.ffmpeg_bin,
+            "rffmpeg_bin": self.rffmpeg_bin,
+            "rffprobe_bin": self.rffprobe_bin,
+            "remote_probe_dir": self.remote_probe_dir,
             "max_concurrent_jobs": self.max_concurrent_jobs,
             "job_timeout_seconds": self.job_timeout_seconds,
             "refuse_overwrite": self.refuse_overwrite,
@@ -194,7 +203,11 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
 
     engine = EngineConfig(
         handbrake_bin=environment("ENGINE") or engine_raw.get("handbrake_bin") or "HandBrakeCLI",
-        ffprobe_bin=engine_raw.get("ffprobe_bin") or "ffprobe",
+        ffprobe_bin=environment("FFPROBE") or engine_raw.get("ffprobe_bin", "ffprobe"),
+        ffmpeg_bin=environment("FFMPEG") or engine_raw.get("ffmpeg_bin", "ffmpeg"),
+        rffmpeg_bin=environment("RFFMPEG") or engine_raw.get("rffmpeg_bin", ""),
+        rffprobe_bin=environment("RFFPROBE") or engine_raw.get("rffprobe_bin", ""),
+        remote_probe_dir=engine_raw.get("remote_probe_dir", ""),
         max_concurrent_jobs=max(1, int(environment("MAX_JOBS") or engine_raw.get("max_concurrent_jobs", 1) or 1)),
         extra_args=extra_args,
         job_timeout_seconds=int(engine_raw.get("job_timeout_seconds", 0) or 0),
