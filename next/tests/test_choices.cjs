@@ -1215,6 +1215,37 @@ test("FFmpeg status ignores closed drawers and installation errors stay visible"
   assert.match(n.get("ffmpeg-install-message").textContent, /无法开始安装/);
 });
 
+test("HEVC source template keeps its policy and source bitrate instead of fixed RF", () => {
+  const {context:c, controls:n, control} = settingsHarness();
+  control("source-preserve"); control("source-preserve-note"); control("task-template-note");
+  for (const id of ["stream-faststart", "stream-downscale", "stream-maxrate", "stream-buffer", "stream-keyframe"]) control(id);
+  c.renderChoice(control("stream-pixel"), [""]);
+  c.renderChoice(n.get("video-quality-type"), ["rf", "source"]);
+  const form = plain(c.buildSpec(true));
+  form.source_preserve = true; form.video.encoder = "x265"; form.video.quality_type = "source"; form.video.quality = null;
+  form.audio.tracks = []; form.streaming = {faststart:true};
+  vm.runInContext('state.engineId="ffmpeg";state.taskTemplates='+JSON.stringify([{id:"source",builtin:true,supported_engines:["ffmpeg","rffmpeg"],form_spec:form,spec:form,name:"HEVC 源参数"}]),c);
+  c.applyTaskTemplate("source");
+  assert.equal(n.get("source-preserve").checked,true);
+  const built = plain(c.buildSpec());
+  assert.equal(built.source_preserve,true); assert.equal(built.video.quality_type,"source");
+  assert.equal(built.video.bitrate_kbps,undefined); assert.equal(built.video.framerate,"auto");
+  assert.equal(built.dimensions.width,undefined); assert.deepEqual(built.audio.tracks,[]);
+  n.get("source-preserve").checked=false;
+  c.settingsChanged({target:n.get("source-preserve")});
+  assert.equal(plain(c.buildSpec()).source_preserve,undefined);
+  assert.equal(plain(c.buildSpec()).video.quality_type,"rf");
+});
+
+test("HEVC source template is rejected under HandBrake without replacing the draft", () => {
+  const {context:c,controls:n,control} = settingsHarness(); control("task-template-note");
+  const before=plain(c.buildSpec());
+  vm.runInContext('state.taskTemplates=[{id:"source",builtin:true,supported_engines:["ffmpeg","rffmpeg"]}]',c);
+  c.applyTaskTemplate("source");
+  assert.deepEqual(plain(c.buildSpec()),before);
+  assert.match(n.get("task-template-note").textContent,/切换引擎/);
+});
+
 test("numeric choice reads zero/empty without losing semantics", () => {
   const { context, control } = harness();
   const node = control("dim-modulus");

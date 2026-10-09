@@ -77,7 +77,7 @@ VIDEO_LEVELS = {
 
 FRAMERATES = {"auto", "5", "10", "12", "15", "23.976", "24", "25", "29.97", "30", "50", "59.94", "60"}
 
-VIDEO_QUALITY_TYPES = {"rf", "vbr", "abr", "lossless", "constant", "crf"}
+VIDEO_QUALITY_TYPES = {"rf", "vbr", "abr", "lossless", "constant", "crf", "source"}
 
 DEINTERLACE = {"off", "fast", "slow", "slower", "default", "skip-spatial", "bob", "custom"}
 DENOISE = {"off", "nlmeans", "hqdn3d", "custom"}
@@ -649,6 +649,7 @@ class TranscodeSpec:
     #: Optional metadata the client wants stamped on the output.
     metadata: dict = field(default_factory=dict)
     streaming: StreamingSpec = field(default_factory=StreamingSpec)
+    source_preserve: bool = False
 
     @classmethod
     def from_dict(cls, data: dict) -> "TranscodeSpec":
@@ -656,7 +657,7 @@ class TranscodeSpec:
             raise SpecError("spec must be an object")
         _reject_unknown("spec", data, {
             "version", "preset", "container", "title", "video", "audio",
-            "subtitles", "chapters", "dimensions", "filters", "metadata", "streaming",
+            "subtitles", "chapters", "dimensions", "filters", "metadata", "streaming", "source_preserve",
         })
         spec = cls()
         if "version" in data:
@@ -681,6 +682,15 @@ class TranscodeSpec:
             spec.filters = FilterSpec.from_dict(data["filters"] or {})
         if "streaming" in data:
             spec.streaming = StreamingSpec.from_dict(data["streaming"])
+        if "source_preserve" in data:
+            if type(data["source_preserve"]) is not bool:
+                raise SpecError("source_preserve must be boolean")
+            spec.source_preserve = data["source_preserve"]
+        if spec.video.quality_type == "source" and not spec.source_preserve:
+            raise SpecError("source bitrate requires source_preserve")
+        if spec.source_preserve:
+            from .source_preserve import validate_policy
+            validate_policy(spec)
         if "metadata" in data:
             spec.metadata = _safe_metadata(data["metadata"])
             if spec.metadata:
@@ -703,6 +713,7 @@ class TranscodeSpec:
             "filters": asdict(self.filters),
             "metadata": self.metadata,
             **({"streaming": asdict(self.streaming)} if self.streaming != StreamingSpec() else {}),
+            **({"source_preserve": True} if self.source_preserve else {}),
         }
 
 
@@ -737,6 +748,8 @@ def build_engine_args(spec: TranscodeSpec, *, overrides: dict | None = None, pre
     The caller (worker) prepends ``-i``/``-o``; those are never spec-controlled.
     """
 
+    if spec.source_preserve or spec.video.quality_type == "source":
+        raise SpecError("保持源参数模板仅支持 FFmpeg 本机 / rffmpeg，请切换引擎")
     args: list[str] = []
 
     # Preset must come first so explicit flags can override it.

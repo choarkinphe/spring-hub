@@ -47,6 +47,35 @@ def main():
                         '-f','lavfi','-i','sine=frequency=440:sample_rate=48000','-t','3','-c:v','ffv1','-c:a','pcm_s16le',str(source)],check=True)
         for name, engine in engines.items():
             for template in builtin_templates():
+                if template['slug'] == 'hevc-source':
+                    # Separate fixture: source-policy needs measured video bitrate
+                    # and MP4-compatible audio, unlike the lossless ffv1 fixture.
+                    if name == 'handbrake':
+                        continue
+                    from cutecat.source_preserve import resolve_source
+                    for label, size, rate, pixel in [('source-8bit','640x360','24000/1001','yuv420p'),
+                                                     ('source-10bit','320x240','60','yuv420p10le')]:
+                        fixture=Path(directory)/(label+'.mp4')
+                        subprocess.run([args.ffmpeg,'-nostdin','-v','error','-f','lavfi','-i',f'testsrc2=size={size}:rate={rate}',
+                            '-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-t','2','-vf','setsar=4/3','-pix_fmt',pixel,
+                            '-c:v','libx264','-b:v','700k','-c:a','aac','-b:a','128k',str(fixture)],check=True)
+                        policy=TranscodeSpec.from_dict(template['spec'])
+                        resolved, command, snapshot=resolve_source(policy,engine.scan(str(fixture)))
+                        output=Path(directory)/(label+'-hevc.mp4')
+                        engine.run_encode(input_path=str(fixture),output_path=str(output),args=command,timeout=90)
+                        meta=json.loads(subprocess.check_output([args.ffprobe,'-v','error','-show_format','-show_streams','-of','json',str(output)],text=True))
+                        v=next(s for s in meta['streams'] if s['codec_type']=='video')
+                        a=next(s for s in meta['streams'] if s['codec_type']=='audio')
+                        assert v['codec_name']=='hevc' and v['pix_fmt']==pixel,v
+                        assert (v['width'],v['height'])==tuple(map(int,size.split('x'))),v
+                        from fractions import Fraction
+                        assert v['sample_aspect_ratio']=='4:3' and Fraction(v['avg_frame_rate'])==Fraction(rate),v
+                        assert a['codec_name']=='aac' and a['sample_rate']=='44100',a
+                        assert resolved.video.bitrate_kbps==snapshot['target_bitrate_kbps']
+                        assert snapshot['video_bitrate_bps']>0
+                        atoms=boxes(output);assert atoms.index('moov')<atoms.index('mdat')
+                        print(f'ffmpeg {label}: HEVC, source size/rate/SAR/bit-depth, AAC copy and target bitrate OK',flush=True)
+                    continue
                 spec=TranscodeSpec.from_dict(template['spec'])
                 output=Path(directory)/(name+'-'+template['slug']+'.mp4')
                 engine.run_encode(input_path=str(source),output_path=str(output),args=build_args(name,spec),timeout=90)

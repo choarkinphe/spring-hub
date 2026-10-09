@@ -370,6 +370,8 @@
         <!-- Video -->
         <div class="tab-panel" data-panel="video">
           <h3>视频</h3>
+          <label class="check"><input id="source-preserve" type="checkbox" /> 保持源参数（HEVC MP4，仅 FFmpeg / rffmpeg）</label>
+          <p id="source-preserve-note" class="hint" hidden>沿用源尺寸、帧率与 8/10-bit 4:2:0，源视频平均码率作为目标；复制全部 MP4 兼容音轨/字幕并保留章节。请选源文件后预校验；无可靠视频码率、HDR 或不兼容流会拒绝。实际码率、大小和画质不会完全相同。关闭此选项后可手动调整其他参数。</p>
           <label class="field"><span>视频编码器</span>
             <select id="video-encoder"></select>
           </label>
@@ -442,7 +444,7 @@
 
       <section id="spec-validation" class="validation-result" hidden aria-label="参数预校验结果">
         <strong id="validation-message" role="status" aria-live="polite"></strong>
-        <p class="hint">仅校验参数结构、预设解析和命令行映射；不检查路径/附属文件是否存在、源轨、硬件准入或实际编码。不创建任务。加入队列仍会完整复验。</p>
+        <p class="hint">一般仅校验参数结构、预设与命令映射；保持源参数模式在已选源文件时额外解析源码率与流信息。不检查硬件准入或实际编码，不创建任务；加入队列仍会完整复验。</p>
         <details id="validation-details" hidden><summary>查看原始提交参数与命令行参数</summary><pre id="validation-json"></pre></details>
       </section>
     </section>

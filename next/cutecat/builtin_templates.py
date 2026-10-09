@@ -37,6 +37,16 @@ def builtin_templates():
             "builtin": True, "slug": slug, "name": name, "description": note, "version": 1,
             "engine": "handbrake", "supported_engines": ["handbrake", "ffmpeg", "rffmpeg"],
             "spec": spec, "form_spec": copy.deepcopy(spec), "baseline": None, "preset_id": "custom"})
+    spec = TranscodeSpec.from_dict({"container": "mp4", "source_preserve": True,
+        "video": {"encoder": "x265", "quality_type": "source", "quality": None, "framerate": "auto"},
+        "dimensions": {"crop_mode": "none", "anamorphic": "auto"}, "audio": {"tracks": []},
+        "subtitles": {"behavior": "none"}, "chapters": {"mode": "auto"},
+        "streaming": {"faststart": True}}).to_dict()
+    result.append({"id": str(uuid.uuid5(uuid.NAMESPACE_URL, "springhub:playback:v1:hevc-source")),
+        "builtin": True, "slug": "hevc-source", "name": "HEVC MP4 · 保持源参数", "version": 1,
+        "description": "仅 FFmpeg / rffmpeg；保持分辨率、源帧率与 8/10-bit 4:2:0，读取源视频平均码率为 HEVC 目标，复制全部 MP4 兼容音轨/字幕并保留章节。缺失视频码率、HDR 或不兼容流会拒绝；实际码率/大小/画质不会完全相同。",
+        "engine": "ffmpeg", "supported_engines": ["ffmpeg", "rffmpeg"],
+        "spec": spec, "form_spec": copy.deepcopy(spec), "baseline": None, "preset_id": "custom"})
     return result
 
 

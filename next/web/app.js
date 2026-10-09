@@ -228,7 +228,7 @@ const CHOICE_LABELS = {
   ...UI.choices,
   auto: "自动", off: "关闭", none: "无", default: "默认",
   av_mp4: "MP4（av_mp4）", av_mkv: "MKV（av_mkv）", mp4: "MP4", mkv: "MKV", webm: "WebM",
-  rf: "恒定质量（RF）", crf: "恒定质量（CRF）", cqp: "恒定量化（CQP）",
+  source: "源平均码率", rf: "恒定质量（RF）", crf: "恒定质量（CRF）", cqp: "恒定量化（CQP）",
   constant: "恒定质量", abr: "平均码率（ABR）", vbr: "可变码率（VBR）", lossless: "无损",
   fast: "快速", slow: "慢速", slower: "更慢", bob: "Bob（双倍帧率）",
   add: "添加字幕", "add-first": "添加首条", burn: "烧录", foreign: "外语搜索",
@@ -361,6 +361,11 @@ function engineQuery(refresh = false) {
   return state.engineId === "handbrake" ? (refresh ? "?refresh=1" : "") : `?engine=${state.engineId}${refresh ? "&refresh=1" : ""}`;
 }
 async function changeEngine(name, {resetPreset = true} = {}) {
+  if (name === "handbrake" && $("source-preserve")?.checked) {
+    renderEngineChoices();
+    $("engine-choice-note").textContent = "保持源参数模板不支持 HandBrake；请先关闭视频页的“保持源参数”。";
+    return;
+  }
   if (!engineSelectable(name)) {
     renderEngineChoices();
     $("engine-choice-note").textContent = state.engineAvailability?.find(item=>item.id===name)?.reason || "引擎状态尚未确认，请先刷新。";
@@ -441,6 +446,7 @@ async function generateOutputName() {
 
 function restoreForm(spec) {
   state.retainedForm = JSON.parse(JSON.stringify(spec));
+  if ($("source-preserve")) $("source-preserve").checked = Boolean(spec.source_preserve);
   if ($("video-peak")) $("video-peak").checked = Boolean(spec.video?.peak_framerate);
   if ($("stream-faststart")) {
     const stream = spec.streaming || {};
@@ -476,6 +482,11 @@ function applyTaskTemplate(identity) {
   const template=state.taskTemplates.find(t=>t.id===identity);
   if(!template)return;
   const templateEngine = template.builtin ? state.engineId : (template.engine || "handbrake");
+  if (template.supported_engines && !template.supported_engines.includes(templateEngine)) {
+    setChoiceValue($("task-template-select"), "");
+    if ($("task-template-note")) $("task-template-note").textContent = "此模板仅支持 FFmpeg 本机 / rffmpeg，请先切换引擎。";
+    return;
+  }
   if (!engineSelectable(templateEngine)) {
     setChoiceValue($("task-template-select"), "");
     if ($("task-template-note")) $("task-template-note").textContent = "无法应用模板：" + (state.engineAvailability?.find(item=>item.id===templateEngine)?.reason || "模板引擎状态尚未确认，请刷新。");
@@ -1332,6 +1343,7 @@ function disableControl(control, disabled) {
 }
 
 function syncControls(target) {
+  document.querySelectorAll('[data-source-locked]').forEach(input => { input.disabled = false; input.removeAttribute('data-source-locked'); });
   const rules = state.caps?.spec_options?.ui_constraints;
   const mode = choiceValue($("video-quality-type"));
   const bitrate = (rules?.bitrate_quality_types || ["abr", "vbr"]).includes(mode);
@@ -1347,6 +1359,7 @@ function syncControls(target) {
   const lossless = inherited || (rules?.lossless_encoders || ["x264", "x264_10bit", "x265", "x265_10bit", "x265_12bit"]).includes(choiceValue($("video-encoder")));
   $("video-quality-type").querySelectorAll("input, option").forEach((input) => {
     if (input.value === "lossless") input.disabled = !lossless;
+    if (input.value === "source") input.disabled = !$("source-preserve")?.checked;
   });
   if (!lossless && mode === "lossless") {
     setChoiceValue($("video-quality-type"), "rf");
@@ -1381,6 +1394,20 @@ function syncControls(target) {
   $("sub-burn").max = $("sub-default").max = String(rules?.source_subtitle_limit || 1);
   $("sub-srt-burn").disabled = $("sub-srt-default").disabled = !srt;
   $("chap-file").disabled = choiceValue($("chap-mode")) !== "markers";
+  const preserve = Boolean($("source-preserve")?.checked);
+  if ($("source-preserve")) $("source-preserve").disabled = !["ffmpeg", "rffmpeg"].includes(state.engineId);
+  if ($("btn-open-presets")) $("btn-open-presets").disabled = preserve || state.engineId !== "handbrake";
+  if ($("source-preserve-note")) $("source-preserve-note").hidden = !preserve;
+  if (preserve) {
+    document.querySelectorAll('[data-page="encode"] input, [data-page="encode"] select, [data-page="encode"] button').forEach(input => {
+      const panel = input.closest('[data-panel]');
+      const basic = ["container-select", "stream-pixel", "stream-maxrate", "stream-buffer", "stream-keyframe", "stream-downscale"].some(id => $(id) === input || $(id)?.contains(input));
+      if (input.id !== "source-preserve" && (basic || ["dimensions","filters","video","audio","subtitles","chapters"].includes(panel?.dataset.panel))) {
+        if (!input.disabled) input.setAttribute('data-source-locked', '');
+        input.disabled = true;
+      }
+    });
+  }
 }
 
 function updateActionButtons() {
@@ -1396,6 +1423,13 @@ function updateActionButtons() {
 }
 
 function settingsChanged(event) {
+  if (event?.target && event.target === $("source-preserve")) {
+    const preserving = $("source-preserve").checked;
+    if (preserving) {setChoiceValue($("video-quality-type"), "source"); $("video-quality").value = ""; $("video-bitrate").value = "";}
+    else {setChoiceValue($("video-quality-type"), "rf"); $("video-quality").value = "24";}
+    setChoiceValue($("task-template-select"), "");
+    state.retainedForm = null; state.templateEditing = null;
+  }
   syncControls(event?.target);
   state.settingsRevision++;
   if (state.validation) showValidation("stale", "设置已修改，请重新预校验。", null);
@@ -1412,7 +1446,7 @@ function showValidation(status, message, result) {
   $("validation-details").hidden = !result;
   $("validation-json").textContent = result ? JSON.stringify({
     preset_id: result.preset_id, args_scope: result.args_scope,
-    submitted_spec: result.submitted_spec, args: result.args,
+    submitted_spec: result.submitted_spec, args: result.args, pending_source: result.pending_source, source_snapshot: result.source_snapshot,
   }, null, 2) : "";
 }
 
@@ -1433,14 +1467,14 @@ function captureSettings() {
 async function prevalidate(snapshot, revision) {
   showValidation("pending", "正在校验参数…", null);
   const result = await api("/spec/validate", {
-    method: "POST", body: JSON.stringify({ ...(snapshot.engine ? {engine:snapshot.engine} : {}), ...(snapshot.template_id ? {template_id:snapshot.template_id,spec_mode:snapshot.spec_mode} : {}), spec: snapshot.spec, preset_id: snapshot.preset_id }),
+    method: "POST", body: JSON.stringify({ ...(snapshot.spec.source_preserve && snapshot.input ? {input:snapshot.input} : {}), ...(snapshot.engine ? {engine:snapshot.engine} : {}), ...(snapshot.template_id ? {template_id:snapshot.template_id,spec_mode:snapshot.spec_mode} : {}), spec: snapshot.spec, preset_id: snapshot.preset_id }),
   });
   if (revision !== state.settingsRevision || JSON.stringify(snapshot) !== JSON.stringify(captureSettings())) {
     showValidation("stale", "设置已修改，本次校验结果已过期；请重新校验。", null);
     return false;
   }
   if (!result.valid) throw new Error("后端未确认参数有效。");
-  showValidation("passed", result.args_scope === "overrides"
+  showValidation("passed", result.pending_source ? "参数结构通过；源平均码率与音轨待解析，请选择源文件后再预校验。" : result.source_snapshot ? `源参数已解析：${result.source_snapshot.width}×${result.source_snapshot.height}，目标平均码率 ${result.source_snapshot.target_bitrate_kbps} kbps；加入队列将复验。` : result.args_scope === "overrides"
     ? "预校验通过：已解析预设，详情仅展示显式覆盖参数。"
     : "预校验通过：自定义参数结构与命令行映射有效。", { ...result, submitted_spec: snapshot.spec });
   return true;
@@ -1474,6 +1508,13 @@ function numberOrNull(id) {
 }
 
 function buildSpec(full = false) {
+  if ($("source-preserve")?.checked) {
+    if (!["ffmpeg", "rffmpeg"].includes(state.engineId)) throw new Error("保持源参数仅支持 FFmpeg 本机 / rffmpeg。");
+    return {version:1,container:"mp4",source_preserve:true,title:1,
+      video:{encoder:"x265",quality_type:"source",quality:null,preset:choiceValue($("video-preset")) || "medium",framerate:"auto"},
+      dimensions:{crop_mode:"none",anamorphic:"auto"},filters:{},audio:{tracks:[]},
+      subtitles:{behavior:"none"},chapters:{mode:"auto"},streaming:{faststart:$("stream-faststart")?.checked ?? true}};
+  }
   const { source: presetSource, preset } = state.presetSelection;
   const spec = {
     version: 1,

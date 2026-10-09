@@ -240,8 +240,8 @@ def _feature_matrix() -> list[dict]:
     result = [{**feature, "id": identity, "area_zh": area, "note_zh": note}
               for feature, (identity, area, note) in zip(features, chinese)]
     result.append({"id": "playback", "area": "Playback templates and external API/CLI", "area_zh": "播放模板与外部调用",
-        "status": "implemented", "note": "Nine read-only MP4 templates; local FFmpeg and administrator-owned rffmpeg compatible entry points. HTTP/CLI share queue and safe publication.",
-        "note_zh": "9 类内置 MP4 模板、本机 FFmpeg 和外部 HTTP/CLI 已接入；rffmpeg 使用管理员配置的共享路径 wrapper，运行态暂停不支持，取消不证明远端退出。"})
+        "status": "implemented", "note": "Ten read-only MP4 templates (source-preserving HEVC requires FFmpeg); local FFmpeg and administrator-owned rffmpeg compatible entry points. HTTP/CLI share queue and safe publication.",
+        "note_zh": "10 类内置 MP4 模板（保持源参数 HEVC 仅 FFmpeg/rffmpeg）、本机 FFmpeg 和外部 HTTP/CLI 已接入；rffmpeg 使用管理员配置的共享路径 wrapper，运行态暂停不支持，取消不证明远端退出。"})
     return result
 
 
@@ -520,15 +520,35 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/v1/spec/validate" and method == "POST":
             payload = body or {}
             wrapped = any(key in payload for key in ("spec", "preset_id", "engine", "template_id"))
-            if wrapped and set(payload) - {"spec", "preset_id", "engine", "template_id", "spec_mode"}:
+            if wrapped and set(payload) - {"spec", "preset_id", "engine", "template_id", "spec_mode", "input"}:
                 raise ApiError(400, "validation accepts only spec, preset_id, engine and template_id")
             try:
                 name, raw, identity, template = request_spec(store, payload if wrapped else {"spec": payload})
             except SpecError as exc:
                 raise ApiError(400, str(exc)) from exc
             spec, preset_id, preset_name, document, args = self._prepare_spec(raw, identity, name=name)
+            source_snapshot = None
+            pending_source = spec.source_preserve
+            if "input" in payload and not pending_source:
+                raise ApiError(400, "源路径仅用于保持源参数的预校验")
+            if pending_source and payload.get("input") is not None:
+                try:
+                    ref = payload["input"]
+                    if not isinstance(ref, dict) or set(ref) != {"root", "path"}:
+                        raise SpecError("input requires storage root and relative file path")
+                    resolved = resolve_request(list(cfg.storage_roots), ref["root"], ref["path"], require_exists=True)
+                    if not resolved.is_file:
+                        raise SpecError("source must be a file")
+                    from .source_preserve import resolve_source
+                    spec, args, source_snapshot = resolve_source(spec, self.state.backends.get(name).scan(str(resolved.absolute)))
+                    pending_source = False
+                except (SpecError, PathSafetyError) as exc:
+                    raise ApiError(400, str(exc)) from exc
+                except EngineError as exc:
+                    raise ApiError(503, str(exc)) from exc
             return {
-                "valid": True, "engine": name, "template_id": template["id"] if template else None, "spec": spec.to_dict(), "args": args,
+                "valid": True, "pending_source": pending_source, "source_snapshot": source_snapshot,
+                "engine": name, "template_id": template["id"] if template else None, "spec": spec.to_dict(), "args": args,
                 "preset_id": preset_id, "preset_name": preset_name,
                 "args_scope": "overrides" if document else "custom",
                 "checked": ["structure", "preset", "mapping"],
@@ -721,8 +741,16 @@ class Handler(BaseHTTPRequestHandler):
             overrides, identity, input_root=input_path.root.id, name=name,
         )
         remote_config = self.state.backends.remote_settings() if name == "rffmpeg" else None
+        source_snapshot = None
+        source_policy = spec.to_dict() if spec.source_preserve else None
         try:
-            admit(self.state.backends.get(name, remote_config=remote_config), name, spec, preset=document, overrides=overrides)
+            engine = self.state.backends.get(name, remote_config=remote_config)
+            if source_policy:
+                from .source_preserve import resolve_source
+                spec, args, source_snapshot = resolve_source(spec, engine.scan(str(input_path.absolute)))
+            admit(engine, name, spec, preset=document, overrides=overrides)
+        except SpecError as exc:
+            raise ApiError(400, str(exc)) from exc
         except AdmissionError as exc:
             raise ApiError(exc.status, str(exc)) from exc
         except EngineError as exc:
@@ -732,6 +760,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(409, "准入期间 rffmpeg 配置已修改，请重新提交任务")
             values = self.state.runtime.read()
             execution = {"engine": name,
+                **({"source_policy": source_policy, "source_snapshot": source_snapshot} if source_policy else {}),
                 **({"remote_config": remote_config} if remote_config is not None else {}), "template_id": template["id"] if template else None,
                 "template_name": template["name"] if template else None,
                 "preset": document, "overrides": overrides, "settings": {

@@ -26,6 +26,8 @@ def request_spec(store, payload):
         if template is None:
             raise SpecError("unknown task template")
     name = engine_name(payload.get("engine", template.get("engine") if template else None))
+    if template and template.get("supported_engines") and name not in template["supported_engines"]:
+        raise SpecError("此模板仅支持 FFmpeg 本机 / rffmpeg，请切换引擎")
     if template and not template.get("builtin") and name != engine_name(template.get("engine")):
         raise SpecError("user template belongs to a different engine; copy and validate it first")
     mode = payload.get("spec_mode", "merge")

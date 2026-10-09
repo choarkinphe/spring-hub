@@ -106,6 +106,12 @@ class Worker:
                 validate_preset_document(document)
             document = prepare_job_preset(document, overrides)
             args = build_args(name, spec, overrides=overrides if document else None, preset=document)
+            if execution and execution.get("source_policy"):
+                from .source_preserve import resolve_source
+                policy = TranscodeSpec.from_dict(execution["source_policy"])
+                checked, args, snapshot = resolve_source(policy, engine.scan(str(input_path.absolute)))
+                if snapshot != execution.get("source_snapshot") or checked.to_dict() != spec.to_dict():
+                    raise EngineError("源视频参数在创建后发生变化，请重新创建任务")
             for flag, absolute in files.items():
                 if flag == "--markers":
                     index = next(i for i, arg in enumerate(args) if arg.startswith("--markers="))
@@ -141,6 +147,10 @@ class Worker:
                         partial = Path(staging) / output_path.absolute.name
                         # Re-probe after waiting for the output lock: queued tasks
                         # must not reuse submission-time hardware readiness.
+                        if execution and execution.get("source_policy"):
+                            _, _, snapshot = resolve_source(policy, engine.scan(str(input_path.absolute)))
+                            if snapshot != execution.get("source_snapshot"):
+                                raise EngineError("等待输出锁期间源参数已改变，请重新创建任务")
                         admit(engine, name, spec, preset=document, overrides=overrides, refresh=True)
                         self._check_cancel(job_id)
                         with tempfile.TemporaryDirectory(prefix="cute-cat-job-preset-") as preset_dir:

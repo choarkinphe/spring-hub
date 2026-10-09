@@ -29,10 +29,15 @@ from cutecat.process import run_process
 class MappingTests(unittest.TestCase):
     def test_every_builtin_has_stable_safe_spec_for_all_engines(self):
         first = builtin_templates()
-        self.assertEqual(len(first), 9)
+        self.assertEqual(len(first), 10)
         self.assertEqual([t['id'] for t in first], [t['id'] for t in builtin_templates()])
         for template in first:
             spec = TranscodeSpec.from_dict(template['spec'])
+            if spec.source_preserve:
+                self.assertEqual(template['supported_engines'], ['ffmpeg', 'rffmpeg'])
+                self.assertEqual(build_ffmpeg_args(spec), [])
+                with self.assertRaises(SpecError): build_engine_args(spec)
+                continue
             hb, ff = build_engine_args(spec), build_ffmpeg_args(spec)
             self.assertIn('--optimize', hb)
             self.assertIn('-X', hb)

@@ -14,6 +14,11 @@ SOFTWARE = {"x264", "x264_10bit", "x265", "x265_10bit", "x265_12bit"}
 
 def build_ffmpeg_args(spec):
     v, d, f, s, a, stream = spec.video, spec.dimensions, spec.filters, spec.subtitles, spec.audio, spec.streaming
+    if spec.source_preserve:
+        from .source_preserve import validate_policy
+        validate_policy(spec)
+        # No fictitious bitrate/CRF: concrete argv requires source metadata.
+        return []
     if spec.preset or spec.title != 1:
         raise SpecError("FFmpeg does not accept HandBrake presets or disc titles")
     if d.crop_mode == "auto" or d.anamorphic == "loose":
